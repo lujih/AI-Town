@@ -74,6 +74,13 @@
         <input id="chatInput" type="text" placeholder="说点什么…" autocomplete="off" aria-label="消息" />
         <button type="submit">发送</button>
       </form>
+      <form id="goalForm" class="goal-form hidden">
+        <label class="goal-label" for="goalInput">给 TA 定个今日目标</label>
+        <div class="goal-row">
+          <input id="goalInput" type="text" placeholder="例：攒钱买显卡 / 多交朋友 / 去公园散步" autocomplete="off" aria-label="今日目标" />
+          <button type="submit">设定</button>
+        </div>
+      </form>
     </section>
 
     <section class="tab-pane" data-pane="economy">
@@ -84,6 +91,9 @@
         <div><dt>公园</dt><dd id="shopPark">0</dd><span class="stock-line">库存 / 单价</span></div>
         <div><dt>集市</dt><dd id="shopMarket">0</dd><span class="stock-line">库存 / 单价</span></div>
       </dl>
+      <p class="pane-hint rank-title">小镇名人榜 · 按天活跃分</p>
+      <p class="rank-meta" id="rankMeta"></p>
+      <ol class="leaderboard" id="leaderboard"></ol>
     </section>
   </aside>
 

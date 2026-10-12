@@ -52,6 +52,7 @@
 
   // ---------- NPC ----------
   const NAMES = ["小北", "阿澈", "柚子", "老周", "林可", "豆豆", "阿凯", "苏苏"];
+  const JOBS = ["咖啡师", "图书管理员", "园艺师", "矿工", "记者", "快递员", "店主", "学生"];
   let startPointsRef = null;
   // 初始库存：price=0 的 POI（lib/home1/home2）取 0 仅作兜底，restock 会跳过它们。
   const POI_INITIAL_STOCK = { cafe: 50, lib: 0, park: 30, home1: 0, home2: 0, market: 40 };
@@ -81,6 +82,7 @@
       const p = PERSONALITIES[i % PERSONALITIES.length];
       npcs.push({
         id: i, name, personality: p,
+        job: JOBS[i % JOBS.length],
         x: startPoints[i].x, y: startPoints[i].y, r: 10,
         target: null, speed: 0.8 + Math.random() * 0.6,
         gold: 50 + Math.floor(Math.random() * 80),
@@ -88,6 +90,9 @@
         lastActionAt: gameTime, mood: "normal",
         emoji: ["🙂", "😄", "😎", "🤓"][i % 4],
         chatOpen: false, chatLines: p.chat,
+        dailyGoal: null,      // 玩家给设定的"今日目标"
+        goalBoost: null,      // 目标解析出的临时偏好
+        stats: { spend: 0, social: 0, chats: 0, arrived: 0 },
       });
     });
     return npcs;
@@ -95,22 +100,60 @@
   const npcs = makeNpcs();
 
   // ---------- 巡游 ----------
+  // 把玩家给的"今日目标"解析成临时行为偏好（规则式，不依赖 LLM）
+  function parseGoal(npc, text) {
+    const t = text.toLowerCase();
+    const likes = [];
+    const dislike = null;
+    let spendCap = null;
+    let socialBias = false;
+    let saveBias = false;
+    let workBias = false;
+
+    if (/(赚钱|打工|工作|赚金币|攒钱)/.test(t)) { workBias = true; }
+    if (/(咖啡|cafe)/.test(t)) likes.push("咖啡馆");
+    if (/(集市|购物|买东西)/.test(t)) likes.push("集市");
+    if (/(公园|散步|锻炼|休息)/.test(t)) likes.push("公园");
+    if (/(图书馆|读书|学习)/.test(t)) likes.push("图书馆");
+    if (/(朋友|社交|聊天|交朋友)/.test(t)) { socialBias = true; likes.push("咖啡馆"); likes.push("集市"); }
+    if (/(省钱|节俭|别花)/.test(t)) { saveBias = true; }
+    if (/(少去|别去)/.test(t) && /(咖啡馆)/.test(t)) { /* 简单起见忽略否定 */ }
+
+    npc.dailyGoal = text;
+    npc.goalBoost = { likes, spendCap, socialBias, saveBias, workBias, t };
+    // 新目标生效时，立刻按偏好选个目标
+    if (npc.target && !npc.chatOpen) pickNextTarget(npc);
+  }
+
+  // 目标驱动的选点：优先 goal.likes，其次性格 likes，再次随机，最后回家
   function pickNextTarget(npc) {
-    const roll = Math.random();
-    if (roll < 0.1 && !npc.chatOpen) {
+    const boost = npc.goalBoost;
+    const homeChance = 0.1;
+
+    // 社交偏置：聊天中不抢目标
+    if (npc.chatOpen) return;
+
+    // 优先级 1：玩家目标 likes
+    if (boost && boost.likes && boost.likes.length && Math.random() < 0.6) {
+      npc.target = POIS.find((p) => boost.likes.includes(p.name)) || null;
+      if (npc.target) { addEvent(`${npc.name} 按目标前往「${npc.target.name}」`, "move"); return; }
+    }
+    // 优先级 2：性格 likes
+    if (Math.random() < 0.5) {
+      const likes = POIS.filter((p) => npc.personality.likes.includes(p.name));
+      npc.target = likes.length ? likes[Math.floor(Math.random() * likes.length)] : null;
+      if (npc.target) { addEvent(`${npc.name} 前往「${npc.target.name}」`, "move"); return; }
+    }
+    // 优先级 3：回家
+    if (Math.random() < homeChance) {
       npc.target = npc.home;
       npc.lastActionAt = gameTime;
       addEvent(`${npc.name} 回家了`, "move");
       return;
     }
-    if (roll < 0.7) {
-      const likes = POIS.filter((p) => npc.personality.likes.includes(p.name));
-      npc.target = likes.length ? likes[Math.floor(Math.random() * likes.length)] : null;
-    }
-    if (!npc.target) {
-      const pool = POIS.filter((p) => p !== npc.home);
-      npc.target = pool[Math.floor(Math.random() * pool.length)];
-    }
+    // 优先级 4：随机
+    const pool = POIS.filter((p) => p !== npc.home);
+    npc.target = pool[Math.floor(Math.random() * pool.length)];
     addEvent(`${npc.name} 前往「${npc.target.name}」`, "move");
   }
 
@@ -132,14 +175,25 @@
   function arrivePoi(npc) {
     const poi = npc.target;
     npc.target = null;
-    if (poi.price > 0 && Math.random() < 0.7) consume(npc, poi);
+    npc.stats.arrived++;
+    // 消费概率：节俭型 / 目标省钱时降低
+    let buyChance = 0.7;
+    if (npc.goalBoost && npc.goalBoost.saveBias) buyChance = 0.2;
+    if (npc.personality.key === "saver") buyChance = 0.4;
+    if (poi.price > 0 && Math.random() < buyChance) consume(npc, poi);
     else say(npc, randomFrom(npc.personality.chat));
+    // 社交偏置：更常闲聊
+    if (npc.goalBoost && npc.goalBoost.socialBias && Math.random() < 0.5) {
+      npc.stats.social++;
+      say(npc, "刚才认识的新朋友，聊得真开心！");
+    }
     if (Math.random() < 0.4) pickNextTarget(npc);
   }
 
   function consume(npc, poi) {
     if (npc.gold < poi.price) { say(npc, "金币不够，这次不买了。"); return; }
     npc.gold -= poi.price;
+    npc.stats.spend += poi.price;
     poi.stock = Math.max(0, poi.stock - 1);
     addEvent(`${npc.name} 在${poi.name}花了 ${poi.price} 金币`, "money");
     say(npc, `在${poi.name}买了一份，感觉不错！`);
@@ -449,6 +503,8 @@
   const chatLog = document.getElementById("chatLog");
   const chatForm = document.getElementById("chatForm");
   const chatInput = document.getElementById("chatInput");
+  const goalForm = document.getElementById("goalForm");
+  const goalInput = document.getElementById("goalInput");
   const drawer = document.getElementById("drawer");
   let drawerOpen = false;
 
@@ -461,10 +517,13 @@
   function openChat(npc) {
     activeNpc = npc;
     npc.chatOpen = true;
-    chatMeta.textContent = `${npc.emoji} ${npc.name} · ${npc.personality.label}`;
+    chatMeta.textContent = `${npc.emoji} ${npc.name} · ${npc.personality.label} · ${npc.job}`;
     chatForm.classList.remove("hidden");
+    goalForm.classList.remove("hidden");
+    goalInput.value = npc.dailyGoal || "";
+    goalInput.dataset.npc = npc.id;
     chatLog.innerHTML = "";
-    addChatMsg("npc", `你好，我是${npc.name}。今天天气${lightOf()}，要不要聊两句？`);
+    addChatMsg("npc", `你好，我是${npc.name}，镇上${npc.job}。今天天气${lightOf()}，要不要聊两句？`);
     // 开抽屉 + 切到 chat tab
     setDrawer(true);
     switchTab("chat");
@@ -478,6 +537,7 @@
     activeNpc = null;
     chatMeta.textContent = "点击居民或名册开始对话";
     chatForm.classList.add("hidden");
+    goalForm.classList.add("hidden");
     chatLog.innerHTML = "";
     unhighlightRoster();
   }
@@ -500,19 +560,59 @@
     const text = chatInput.value.trim();
     if (!text || !activeNpc) return;
     chatInput.value = "";
+    activeNpc.stats.chats++;
     addChatMsg("user", text);
     activeNpc.chatOpen = true;
     const reply = respond(activeNpc, text);
     setTimeout(() => { addChatMsg("npc", reply); say(activeNpc, reply); }, 400 + Math.random() * 400);
   });
 
+  // 玩家设定"今日目标" → 规则式解析成行为偏好
+  goalForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const npc = npcs[Number(goalInput.dataset.npc)];
+    if (!npc) return;
+    const text = goalInput.value.trim();
+    if (!text) {
+      npc.dailyGoal = null;
+      npc.goalBoost = null;
+      addEvent(`${npc.name} 的目标清空了`, "day");
+      return;
+    }
+    parseGoal(npc, text);
+    addEvent(`${npc.name} 的新目标：${text}`, "day");
+    addChatMsg("npc", `收到，我今天就按这个方向来：「${text}」。`);
+    goalInput.value = npc.dailyGoal;
+  });
+
   // 规则式回复
+  // 规则式回复：职业 + 目标 + 关键词
+  const JOB_STYLE = {
+    "咖啡师": "刚擦完吧台，",
+    "图书管理员": "从书架后探出身子，",
+    "园艺师": "手上还沾着泥，",
+    "矿工": "背着工具包，",
+    "记者": "手里拿着笔记本，",
+    "快递员": "刚送完一趟，",
+    "店主": "站在自家铺子门口，",
+    "学生": "书包还没放下，",
+  };
   function respond(npc, text) {
     const t = text.toLowerCase();
     const p = npc.personality;
-    if (/(你好|hi|hello|嗨)/i.test(t)) return `嗨，我是${npc.name}！${randomFrom(p.chat)}`;
+    const jobGreeting = JOB_STYLE[npc.job] || "";
+    if (/(你好|hi|hello|嗨)/i.test(t)) {
+      return `${jobGreeting}嗨，我是${npc.name}！${randomFrom(p.chat)}`;
+    }
+    if (/(目标|打算|计划|今天干嘛|要做什么)/i.test(t)) {
+      if (npc.dailyGoal) return `我今天打算：${npc.dailyGoal}。你帮我把把关？`;
+      return "今天没特别打算，走两步再说。要不你帮我定个？";
+    }
+    if (/(工作|上班|职业|做什么|营生)/i.test(t)) {
+      return `我是镇上${npc.job}。日子过得去，攒钱要紧。`;
+    }
     if (/(钱|金币|gold)/i.test(t)) {
-      if (p.key === "saver") return `我现在有 ${npc.gold} 金币，打算攒着。节俭让我安心。`;
+      if (p.key === "saver") return `我现在 ${npc.gold} 金币，已花 ${npc.stats.spend}。打算攒着。`;
       if (p.key === "social") return `我现在 ${npc.gold} 金币，够请你看杯咖啡了！`;
       return `我现在 ${npc.gold} 金币，够生活，也能偶尔奢侈一下。`;
     }
@@ -525,7 +625,9 @@
       if (p.dislikes.includes("图书馆")) return "图书馆太安静了，我坐不住。";
       return "图书馆挺舒服的，偶尔也去看看。";
     }
-    if (/(天气|今天)/i.test(t)) return `今天${lightOf()}。小镇上的日子就是平凡而美好。`;
+    if (/(天气|今天)/i.test(t)) {
+      return `今天${lightOf()}。小镇上的日子就是平凡而美好。`;
+    }
     if (/(公园|散步|走)/i.test(t)) {
       if (p.likes.includes("公园")) return "公园是我每天必去的地方！";
       return "公园不错，有空去走走。";
@@ -534,7 +636,8 @@
       const market = POIS.find((p) => p.id === "market");
       return `集市的库存剩 ${market.stock} 份，要不要看看？`;
     }
-    return randomFrom(p.chat);
+    // 兜底：性格 + 职业风格
+    return `${jobGreeting}${randomFrom(p.chat)}`;
   }
 
   // ---------- 抽屉 / Tab ----------
@@ -570,7 +673,7 @@
       nameEl.textContent = n.name;
       const typeEl = document.createElement("div");
       typeEl.className = "r-type";
-      typeEl.textContent = n.personality.label;
+      typeEl.textContent = `${n.job} · ${n.personality.label}`;
       nm.appendChild(nameEl); nm.appendChild(typeEl);
       const gold = document.createElement("span");
       gold.className = "r-gold";
@@ -604,6 +707,8 @@
   const shopCafeEl = document.getElementById("shopCafe");
   const shopParkEl = document.getElementById("shopPark");
   const shopMarketEl = document.getElementById("shopMarket");
+  const leaderboard = document.getElementById("leaderboard");
+  const rankMeta = document.getElementById("rankMeta");
   function renderEconomy() {
     totalGoldEl.textContent = npcs.reduce((s, n) => s + n.gold, 0);
     // 库存/价格一起显示，让用户知道"花多少"
@@ -611,6 +716,43 @@
     shopCafeEl.textContent = `${cafe.stock} 份 · ${cafe.price}金`;
     shopParkEl.textContent = `${park.stock} 份 · ${park.price}金`;
     shopMarketEl.textContent = `${market.stock} 份 · ${market.price}金`;
+    renderLeaderboard();
+  }
+
+  // 小镇名人榜：按"活跃分"排序（消费 + 社交 + 聊天 加权）
+  function npcScore(n) {
+    return n.stats.spend * 1 + n.stats.social * 20 + n.stats.chats * 15 + n.stats.arrived * 5;
+  }
+  function renderLeaderboard() {
+    if (!leaderboard) return;
+    const ranked = npcs
+      .map((n) => ({ n, score: npcScore(n) }))
+      .sort((a, b) => b.score - a.score);
+    leaderboard.innerHTML = "";
+    ranked.forEach((row, i) => {
+      const li = document.createElement("li");
+      li.className = "lb-item";
+      const rank = document.createElement("span");
+      rank.className = "lb-rank";
+      rank.textContent = i + 1;
+      const avatar = document.createElement("span");
+      avatar.className = "avatar";
+      avatar.style.background = row.n.personality.color;
+      avatar.textContent = row.n.emoji;
+      const name = document.createElement("span");
+      name.className = "lb-name";
+      name.textContent = `${row.n.name} · ${row.n.job}`;
+      const score = document.createElement("span");
+      score.className = "lb-score";
+      score.textContent = `${row.score} 分`;
+      li.appendChild(rank); li.appendChild(avatar); li.appendChild(name); li.appendChild(score);
+      li.addEventListener("click", () => { openChat(row.n); locateNpc(row.n); });
+      leaderboard.appendChild(li);
+    });
+    if (rankMeta) {
+      const top = ranked[0];
+      rankMeta.textContent = top ? `今日最活跃：${top.n.name}（${top.score} 分）` : "";
+    }
   }
 
   // ---------- canvas 点击 ----------
@@ -656,6 +798,9 @@
       n.gold = 50 + Math.floor(Math.random() * 80);
       n.chatOpen = false;
       n.emoji = ["🙂", "😄", "😎", "🤓"][n.id % 4];
+      n.dailyGoal = null;
+      n.goalBoost = null;
+      n.stats = { spend: 0, social: 0, chats: 0, arrived: 0 };
     }
     for (const p of POIS) p.stock = POI_INITIAL_STOCK[p.id] ?? 0;
     gameTime = 9 * 60;
@@ -712,7 +857,13 @@
       gameTime -= DAY_LENGTH;
       dayCount++;
       dayLabelEl.textContent = `第 ${dayCount} 天`;
-      for (const n of npcs) n.gold += 20;
+      for (const n of npcs) {
+        n.gold += 20;
+        // 新的一日：目标失效 + 统计清零（名人榜按天算）
+        n.dailyGoal = null;
+        n.goalBoost = null;
+        n.stats = { spend: 0, social: 0, chats: 0, arrived: 0 };
+      }
       addEvent(`新的一天，津贴到账`, "day");
       restock();
     }

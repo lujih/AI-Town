@@ -93,3 +93,22 @@ accent 用暖橙 `#ffb347` 而不是常见的电蓝/荧光绿——这是"黄昏
 ## 实现
 
 （下方为重构后的文件）
+
+---
+
+## 玩法扩展（第二轮：对标同类 AI 小镇）
+
+参照 [AIvilization](https://www.gamespress.com/nl/AIvilization-Now-Available-Through-Your-Browser)、斯坦福 [Generative Agents](https://arxiv.org/abs/2304.03442) 的社区实现，加入 3 个"轻干预"玩法，全部规则式 agent 可撑住：
+
+| 玩法 | 来源 | 实现 |
+|------|------|------|
+| **今日目标** | AIvilization"每日目标" | 聊天面板下方 `#goalForm` 输入框 → `parseGoal()` 关键词解析成 `goalBoost`（likes/save/social/work 偏置）→ `pickNextTarget` 优先命中 |
+| **职业标签** | 斯坦福小镇 agent 身份 | 每个 NPC 一个 `job`（咖啡师/图书管理员/矿工…），名册 + 聊天 + 回复风格都体现职业 |
+| **小镇名人榜** | AIvilization 排行榜 | 经济 tab 下方按天活跃分（消费+社交+聊天+到达 加权）排序，前三名配色 |
+
+**设计约束**：
+- 目标"按天"——新一日自动清零 `dailyGoal` + `stats`，名人榜每天重算，避免历史包袱
+- 解析走**关键词命中**而非 LLM，保持"无后端、可静态部署"定位
+- 名人榜前三名用 accent/钱绿/话黄 三色区分名次，不用 01/02/03 编号 tell（名次本身即序列，用数字合理）
+
+**没做的**（定位差异）：5 万 agent 规模、LLM 成本、复杂产业链（挖矿→芯片）、邀请码机制——我们是"小而美"规则式 demo，不抄。
