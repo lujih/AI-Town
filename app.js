@@ -145,11 +145,16 @@
     say(npc, `在${poi.name}买了一份，感觉不错！`);
   }
 
-  // ---------- 说话 / 气泡 ----------
+  // ---------- 说话 / 气泡（跟随说话者） ----------
   const speechEl = document.getElementById("speech");
   function say(npc, text) {
     lastActive = npc;
     speechEl.textContent = `${npc.name}：${text}`;
+    // 气泡锚定到 NPC 头顶（屏幕坐标）
+    const screenX = offX + npc.x * scale;
+    const screenY = offY + npc.y * scale;
+    speechEl.style.left = `${Math.max(120, Math.min(window.innerWidth - 120, screenX))}px`;
+    speechEl.style.top = `${Math.max(70, screenY - 46)}px`;
     speechEl.classList.remove("hidden");
     clearTimeout(say._t);
     say._t = setTimeout(() => { speechEl.classList.add("hidden"); lastActive = null; }, 2800);
@@ -172,19 +177,39 @@
     if (tickerLog.classList.contains("open")) renderLog();
   }
 
+  // 字幕条：新事件从右滑入（CSS 动画），旧事件左移。
+  // 维护固定 3 个 slot，仅更新文本，避免整段重建导致布局抖动。
   function renderTicker() {
     const items = events.slice(0, 3);
-    tickerTrack.innerHTML = "";
-    for (const e of items) {
-      const el = document.createElement("span");
-      el.className = `ticker-item ${e.kind}`;
-      const dot = document.createElement("i");
-      dot.className = "dot";
-      const label = document.createElement("span");
-      label.textContent = e.text;
-      el.appendChild(dot); el.appendChild(label);
-      tickerTrack.appendChild(el);
+    while (tickerTrack.children.length < 3) tickerTrack.appendChild(makeTickerItem(items[2] || null));
+    for (let i = 0; i < 3; i++) {
+      const slot = tickerTrack.children[i];
+      const e = items[i];
+      if (!e) { slot.style.visibility = "hidden"; continue; }
+      slot.style.visibility = "";
+      const label = slot.lastElementChild;
+      if (label.textContent !== e.text) {
+        label.textContent = e.text;
+        slot.className = `ticker-item ${e.kind}`;
+        // 只对新出现的第一条重放滑入动画
+        if (i === 0) {
+          slot.style.animation = "none";
+          void slot.offsetWidth;
+          slot.style.animation = "";
+        }
+      }
     }
+  }
+
+  function makeTickerItem(e) {
+    const el = document.createElement("span");
+    el.className = `ticker-item ${e ? e.kind : ""}`;
+    const dot = document.createElement("i");
+    dot.className = "dot";
+    const label = document.createElement("span");
+    if (e) label.textContent = e.text;
+    el.appendChild(dot); el.appendChild(label);
+    return el;
   }
 
   function renderLog() {
@@ -249,7 +274,8 @@
   // ---------- 绘制（世界坐标 → 屏幕坐标） ----------
   function draw() {
     ctx.save();
-    ctx.fillStyle = "#0b0f24"; // 视口外留黑，让小镇世界有"框"
+    // 视口外填天空底色（与 #nightveil 同色，避免宽屏露出黑边）
+    ctx.fillStyle = "#0d1330";
     ctx.fillRect(0, 0, cssW, cssH);
 
     ctx.translate(offX, offY);
@@ -362,14 +388,19 @@
     ctx.beginPath();
     ctx.ellipse(npc.x, npc.y + npc.r, npc.r, npc.r * 0.42, 0, 0, Math.PI * 2);
     ctx.fill();
-    // 身体
+    // 身体（夜间轻微压暗，呼应路灯）
+    const bodyAlpha = light > 0.4 ? 1 : 0.85;
+    ctx.save();
+    ctx.globalAlpha = bodyAlpha;
     ctx.fillStyle = npc.personality.color;
     ctx.beginPath();
     ctx.arc(npc.x, npc.y, npc.r, 0, Math.PI * 2);
     ctx.fill();
+    ctx.globalAlpha = 1;
     ctx.strokeStyle = "rgba(255,255,255,0.85)";
     ctx.lineWidth = 2;
     ctx.stroke();
+    ctx.restore();
     // 定位圈（记忆点：呼应暖橙 accent）
     if (locAge < 1600) {
       const p = locAge / 1600;
@@ -419,6 +450,13 @@
   const chatForm = document.getElementById("chatForm");
   const chatInput = document.getElementById("chatInput");
   const drawer = document.getElementById("drawer");
+  let drawerOpen = false;
+
+  function setDrawer(open) {
+    drawerOpen = open;
+    document.body.classList.toggle("drawer-open", open);
+    if (open) { renderRosterGold(); renderEconomy(); }
+  }
 
   function openChat(npc) {
     activeNpc = npc;
@@ -428,9 +466,10 @@
     chatLog.innerHTML = "";
     addChatMsg("npc", `你好，我是${npc.name}。今天天气${lightOf()}，要不要聊两句？`);
     // 开抽屉 + 切到 chat tab
-    document.body.classList.add("drawer-open");
+    setDrawer(true);
     switchTab("chat");
     highlightRoster(npc);
+    chatLog.scrollTop = chatLog.scrollHeight;
     chatInput.focus();
   }
 
@@ -503,8 +542,8 @@
   const drawerClose = document.getElementById("drawerClose");
   const tabs = document.querySelectorAll(".drawer-tabs .tab");
 
-  drawerTab.addEventListener("click", () => document.body.classList.add("drawer-open"));
-  drawerClose.addEventListener("click", () => document.body.classList.remove("drawer-open"));
+  drawerTab.addEventListener("click", () => setDrawer(true));
+  drawerClose.addEventListener("click", () => setDrawer(false));
 
   function switchTab(name) {
     document.querySelectorAll(".drawer .tab").forEach((b) => b.classList.toggle("is-active", b.dataset.tab === name));
@@ -567,9 +606,11 @@
   const shopMarketEl = document.getElementById("shopMarket");
   function renderEconomy() {
     totalGoldEl.textContent = npcs.reduce((s, n) => s + n.gold, 0);
-    shopCafeEl.textContent = POIS[0].stock;
-    shopParkEl.textContent = POIS[2].stock;
-    shopMarketEl.textContent = POIS[5].stock;
+    // 库存/价格一起显示，让用户知道"花多少"
+    const cafe = POIS[0], park = POIS[2], market = POIS[5];
+    shopCafeEl.textContent = `${cafe.stock} 份 · ${cafe.price}金`;
+    shopParkEl.textContent = `${park.stock} 份 · ${park.price}金`;
+    shopMarketEl.textContent = `${market.stock} 份 · ${market.price}金`;
   }
 
   // ---------- canvas 点击 ----------
@@ -657,6 +698,11 @@
     if ((t >= 22 || t < 6) && !npc.target) pickNextTarget(npc);
   }
 
+  // 性能：只在抽屉打开时才全量刷新名册金币 / 经济面板
+  function renderPanels() {
+    if (drawerOpen) { renderRosterGold(); renderEconomy(); }
+  }
+
   // ---------- 主循环 ----------
   function tick() {
     if (paused) return;
@@ -667,13 +713,12 @@
       dayCount++;
       dayLabelEl.textContent = `第 ${dayCount} 天`;
       for (const n of npcs) n.gold += 20;
-      addEvent(`新的一天！所有居民获得 20 金币津贴`, "day");
+      addEvent(`新的一天，津贴到账`, "day");
       restock();
     }
     for (const n of npcs) { nightCheck(n); moveToward(n, dt * speed); }
     clockEl.textContent = clockText();
-    renderEconomy();
-    renderRosterGold();
+    renderPanels();
     draw();
   }
 
@@ -695,6 +740,6 @@
     if (gameTime >= DAY_LENGTH) gameTime -= DAY_LENGTH;
   }
   clockEl.textContent = clockText();
-  addEvent("小镇开张了。点右下角「居民」打开面板，或直接点居民开聊。", "day");
+  addEvent("小镇开张了。点右下角「居民」开面板，或直接点居民开聊。", "day");
   draw();
 })();

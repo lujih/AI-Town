@@ -80,8 +80,7 @@ button { font-family: inherit; }
   display: flex;
   align-items: baseline;
   gap: 10px;
-  background: rgba(13, 19, 48, 0.55);
-  backdrop-filter: blur(8px);
+  background: rgba(13, 19, 48, 0.8);
   padding: 8px 14px;
   border-radius: 999px;
   border: 1px solid var(--line);
@@ -107,22 +106,24 @@ button { font-family: inherit; }
 }
 
 .hud-btn {
-  width: 34px;
+  min-width: 34px;
   height: 34px;
+  padding: 0 10px;
   border-radius: 50%;
   background: rgba(13, 19, 48, 0.55);
-  backdrop-filter: blur(8px);
   border: 1px solid var(--line);
   color: var(--ink);
   font-size: 14px;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, border-color 0.15s;
 }
 .hud-btn:hover { background: var(--panel-2); border-color: var(--accent-dim); }
 .hud-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .hud-btn#speedBtn {
-  width: auto;
   padding: 0 12px;
   border-radius: 999px;
   font-family: var(--font-hud);
@@ -162,15 +163,14 @@ button { font-family: inherit; }
 
 @media (prefers-reduced-motion: reduce) {
   .town-mark-dot { animation: none; }
+  .drawer { transition: none; }
 }
 
-/* ---------- 气泡 ---------- */
+/* ---------- 气泡（跟随说话者头顶） ---------- */
 .speech {
   position: absolute;
-  left: 50%;
-  top: 64px;
-  transform: translateX(-50%);
   z-index: 6;
+  transform: translateX(-50%);
   background: rgba(248, 244, 230, 0.95);
   color: #1a1f3a;
   padding: 9px 16px;
@@ -180,9 +180,20 @@ button { font-family: inherit; }
   text-align: center;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
   border: 1px solid rgba(255, 179, 71, 0.35);
+  /* 小三角指向说话者 */
+}
+.speech::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  transform: translateX(-50%);
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-top: 7px solid rgba(248, 244, 230, 0.95);
 }
 
-/* ---------- 底部"小镇播报"字幕条 ---------- */
+/* 底部"小镇播报"字幕条 */
 .ticker {
   position: absolute;
   left: 18px;
@@ -192,8 +203,7 @@ button { font-family: inherit; }
   display: flex;
   align-items: center;
   gap: 10px;
-  background: rgba(13, 19, 48, 0.6);
-  backdrop-filter: blur(8px);
+  background: rgba(13, 19, 48, 0.85);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 10px 14px;
@@ -259,8 +269,7 @@ button { font-family: inherit; }
   z-index: 4;
   max-height: 0;
   overflow: hidden;
-  background: rgba(13, 19, 48, 0.88);
-  backdrop-filter: blur(10px);
+  background: rgba(13, 19, 48, 0.92);
   border: 1px solid var(--line);
   border-bottom: none;
   border-radius: var(--radius) var(--radius) 0 0;
@@ -313,8 +322,7 @@ button { font-family: inherit; }
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  background: rgba(13, 19, 48, 0.7);
-  backdrop-filter: blur(8px);
+  background: rgba(13, 19, 48, 0.85);
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 10px 12px;
@@ -550,6 +558,7 @@ body.drawer-open .drawer { transform: translateX(0); }
   font-size: 13px;
 }
 #chatForm button:hover { background: var(--accent-dim); }
+#chatForm button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* 经济 */
 .economy {
@@ -572,12 +581,20 @@ body.drawer-open .drawer { transform: translateX(0); }
 .economy dd {
   margin: 0;
   font-family: var(--font-hud);
-  font-size: 22px;
+  font-size: 18px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   color: var(--ink);
 }
-.economy dd.gold { color: var(--money); }
+.economy dd.gold { color: var(--money); font-size: 24px; }
+.economy .stock-line {
+  display: block;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-dim);
+  margin-top: 2px;
+  font-family: var(--font-body);
+}
 
 /* ---------- 移动端 ---------- */
 @media (max-width: 720px) {
