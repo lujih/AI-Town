@@ -3,53 +3,90 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AI 小镇</title>
+  <title>AI 小镇 · 一场活的模拟</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div id="app">
-    <header class="topbar">
-      <h1>🏘️ AI 小镇</h1>
-      <div class="clock" id="clock">--:--</div>
-      <div class="daylabel" id="daylabel">第 1 天</div>
-      <button id="resetBtn" class="btn">重置</button>
-      <button id="pauseBtn" class="btn">暂停</button>
-      <button id="speedBtn" class="btn">1x</button>
-    </header>
-    <main class="layout">
-      <section class="canvas-wrap">
-        <canvas id="town" width="900" height="560"></canvas>
-        <div id="speech" class="speech hidden"></div>
-      </section>
-      <aside class="panels">
-        <div class="panel" id="chatPanel">
-          <div class="panel-head">
-            <h2>聊天</h2>
-            <button id="chatClose" class="icon-btn" title="关闭聊天">×</button>
-          </div>
-          <div class="chat-meta" id="chatMeta">点击地图上的居民开始对话</div>
-          <div class="chat-log" id="chatLog"></div>
-          <form id="chatForm" class="hidden">
-            <input id="chatInput" type="text" placeholder="输入消息，回车发送…" autocomplete="off" />
-            <button type="submit">发送</button>
-          </form>
-        </div>
-        <div class="panel">
-          <h2>事件日志</h2>
-          <ul id="eventLog" class="event-log"></ul>
-        </div>
-        <div class="panel">
-          <h2>经济面板</h2>
-          <div class="stats">
-            <div><span class="stat-label">总金币</span><span id="totalGold">0</span></div>
-            <div><span class="stat-label">咖啡馆</span><span id="shopCafe">0</span></div>
-            <div><span class="stat-label">公园</span><span id="shopPark">0</span></div>
-            <div><span class="stat-label">图书馆</span><span id="shopLib">0</span></div>
-          </div>
-        </div>
-      </aside>
-    </main>
+  <!-- 世界舞台：canvas 全幅，夜间蒙层随其缩放 -->
+  <div id="stage">
+    <canvas id="town"></canvas>
+    <div id="nightveil"></div>
+
+    <!-- 左上 HUD：时间 + 天 + 暂停/速度 -->
+    <div class="hud" id="hud">
+      <div class="hud-time">
+        <span id="clock">09:00</span>
+        <span class="hud-day" id="daylabel">第 1 天</span>
+      </div>
+      <div class="hud-controls">
+        <button id="pauseBtn" class="hud-btn" aria-label="暂停">⏸</button>
+        <button id="speedBtn" class="hud-btn" aria-label="速度">1x</button>
+        <button id="resetBtn" class="hud-btn" aria-label="重置">↺</button>
+      </div>
+    </div>
+
+    <!-- 顶部角落的小镇名标 -->
+    <div class="town-mark" aria-hidden="true">
+      <span class="town-mark-dot"></span>
+      <span>AI 小镇</span>
+    </div>
+
+    <!-- 气泡 -->
+    <div id="speech" class="speech hidden"></div>
+
+    <!-- 底部"小镇播报"字幕条 -->
+    <div class="ticker" id="ticker" aria-label="最近事件">
+      <div class="ticker-track" id="tickerTrack"></div>
+      <button class="ticker-expand" id="tickerExpand" aria-label="展开全部事件">⌄</button>
+    </div>
+    <div class="ticker-log" id="tickerLog" aria-label="全部事件" tabindex="0"></div>
+
+    <!-- 右下角抽屉把手 -->
+    <button class="drawer-tab" id="drawerTab" aria-label="居民面板">
+      <span class="drawer-tab-dot"></span>
+      <span class="drawer-tab-label">居民</span>
+    </button>
   </div>
+
+  <!-- 右侧抽屉：居民名册 / 聊天 / 经济 -->
+  <aside class="drawer" id="drawer" aria-label="居民与面板">
+    <header class="drawer-head">
+      <button class="drawer-close" id="drawerClose" aria-label="收起面板">×</button>
+      <nav class="drawer-tabs" role="tablist">
+        <button class="tab is-active" data-tab="roster" role="tab">居民</button>
+        <button class="tab" data-tab="chat" role="tab">聊天</button>
+        <button class="tab" data-tab="economy" role="tab">经济</button>
+      </nav>
+    </header>
+
+    <section class="tab-pane is-active" data-pane="roster">
+      <p class="pane-hint">点名字定位并开聊。颜色是性格。</p>
+      <ul class="roster" id="roster"></ul>
+    </section>
+
+    <section class="tab-pane" data-pane="chat">
+      <div class="chat-meta" id="chatMeta">点击居民或名册开始对话</div>
+      <div class="chat-log" id="chatLog"></div>
+      <form id="chatForm" class="hidden">
+        <input id="chatInput" type="text" placeholder="说点什么…" autocomplete="off" aria-label="消息" />
+        <button type="submit">发送</button>
+      </form>
+    </section>
+
+    <section class="tab-pane" data-pane="economy">
+      <p class="pane-hint">镇上居民共有多少家业。</p>
+      <dl class="economy" id="economy">
+        <div><dt>总金币</dt><dd id="totalGold">0</dd></div>
+        <div><dt>咖啡馆</dt><dd id="shopCafe">0</dd></div>
+        <div><dt>公园</dt><dd id="shopPark">0</dd></div>
+        <div><dt>集市</dt><dd id="shopMarket">0</dd></div>
+      </dl>
+    </section>
+  </aside>
+
   <script src="app.js"></script>
 </body>
 </html>

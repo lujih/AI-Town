@@ -209,7 +209,7 @@ compatibility_date = "2026-01-01"
 
 ## 部署链路复核
 
-- **Cloudflare Pages**：纯静态站点，`wrangler pages deploy . --project-name=ai-town` 即可，不依赖构建步骤。
+- **Cloudflare Pages**：纯静态站点。官方对"非框架"站点的建议是 Build command 用 `exit 0`、Output 填 `/`，Framework preset **没有 "Static" 选项**，留空即可。`wrangler pages deploy . --project-name=ai-town` 亦可。
 - **Git 部署**：Build command 写 `echo 'no build'`、Output 填 `.`、Framework preset 选 `Static`，与 README 第 1 节一致。
 - **本地预览**：`npx serve .` / `python -m http.server`，与 README 第 2 节一致。
 - **CORS / 网络**：纯前端，无 fetch / Worker，无跨域、无构建产物路径问题。

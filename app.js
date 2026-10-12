@@ -1,29 +1,42 @@
 // AI 小镇 — 单页 Canvas 模拟
-// 模块：城镇地图、NPC 巡游、聊天、昼夜循环、经济事件、行为日志
+// 世界窗口：canvas 全屏铺满，HUD/字幕/抽屉悬浮其上
 
 (() => {
   "use strict";
 
-  // ---------- 基础常量 ----------
+  // ---------- 画布（响应式） ----------
   const canvas = document.getElementById("town");
   const ctx = canvas.getContext("2d");
-  const W = canvas.width;
-  const H = canvas.height;
+  const DESIGN_W = 900, DESIGN_H = 560; // 世界坐标
+  let scale = 1, offX = 0, offY = 0, cssW = 0, cssH = 0;
 
-  // 世界时间：一天 = 2400 "分钟"，循环
-  const DAY_LENGTH = 2400; // 游戏分钟/天
-  const TICK_MS = 100;      // 每 tick 100ms
-  const MINUTES_PER_TICK = 4; // 每 tick 推进 4 游戏分钟
-  let gameTime = 9 * 60;    // 起始 09:00
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cssW = canvas.clientWidth || window.innerWidth;
+    cssH = canvas.clientHeight || window.innerHeight;
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    // 世界坐标 → 屏幕：等比缩放 + 居中
+    scale = Math.min(cssW / DESIGN_W, cssH / DESIGN_H);
+    offX = (cssW - DESIGN_W * scale) / 2;
+    offY = (cssH - DESIGN_H * scale) / 2;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener("resize", () => { resize(); draw(); });
+
+  // ---------- 世界时间 ----------
+  const DAY_LENGTH = 2400;
+  const TICK_MS = 100;
+  const MINUTES_PER_TICK = 4;
+  let gameTime = 9 * 60;
   let dayCount = 1;
   let paused = false;
   let speed = clampSpeed(Number(localStorage.getItem("aitown_speed")) || 1);
   function clampSpeed(s) { return s === 2 || s === 4 ? s : 1; }
-  let lastActive = null;    // 正在说话的 NPC（显示气泡）
-  let activeNpc = null;     // 聊天面板选中的 NPC
+  let lastActive = null;
+  let activeNpc = null;
 
   // ---------- 地点（POI） ----------
-  // 每个地点是一个矩形区域 + 一个图标
   const POIS = [
     { id: "cafe", name: "咖啡馆", x: 70, y: 90, w: 150, h: 110, color: "#8b5a2b", icon: "☕", price: 30, stock: 50 },
     { id: "lib", name: "图书馆", x: 700, y: 80, w: 150, h: 110, color: "#3b5998", icon: "📚", price: 0, stock: 0 },
@@ -32,100 +45,57 @@
     { id: "home2", name: "公寓", x: 640, y: 380, w: 150, h: 110, color: "#c9a227", icon: "🏢", price: 0, stock: 0 },
     { id: "market", name: "集市", x: 380, y: 70, w: 180, h: 120, color: "#7b3f99", icon: "🛒", price: 20, stock: 40 },
   ];
-
   function poiAt(x, y) {
-    for (const p of POIS) {
-      if (x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h) return p;
-    }
+    for (const p of POIS) if (x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h) return p;
     return null;
   }
 
   // ---------- NPC ----------
   const NAMES = ["小北", "阿澈", "柚子", "老周", "林可", "豆豆", "阿凯", "苏苏"];
-  let startPointsRef = null; // makeNpcs 初始化后填充，供重置使用
-  // 初始库存：仅 price>0 的 POI 会进入 restock 分支，
-  // price=0 的 POI（lib/home1/home2）取值为 0 仅作兜底，restock 会跳过它们。
+  let startPointsRef = null;
+  // 初始库存：price=0 的 POI（lib/home1/home2）取 0 仅作兜底，restock 会跳过它们。
   const POI_INITIAL_STOCK = { cafe: 50, lib: 0, park: 30, home1: 0, home2: 0, market: 40 };
   const PERSONALITIES = [
-    {
-      key: "saver", label: "节俭型", color: "#4ade80",
+    { key: "saver", label: "节俭型", color: "#4ade80",
       likes: ["公园"], dislikes: ["咖啡馆"],
-      chat: [
-        "又存了点钱，感觉生活很踏实。",
-        "今天没去咖啡馆，省下的咖啡钱够买一周的面包了。",
-        "公园的椅子很便宜，坐着看云也很舒服。",
-      ],
-    },
-    {
-      key: "social", label: "社交型", color: "#38bdf8",
+      chat: ["又存了点钱，感觉生活很踏实。", "今天没去咖啡馆，省下的咖啡钱够买一周的面包了。", "公园的椅子很便宜，坐着看云也很舒服。"] },
+    { key: "social", label: "社交型", color: "#38bdf8",
       likes: ["咖啡馆", "集市"], dislikes: ["图书馆"],
-      chat: [
-        "刚才在咖啡馆认识了一个新邻居，聊得超开心！",
-        "集市上那家水果铺今天人好多，下次一起去？",
-        "我话多吗？我觉得小镇上大家都挺爱聊天的。",
-      ],
-    },
-    {
-      key: "nerd", label: "学术型", color: "#c084fc",
+      chat: ["刚才在咖啡馆认识了一个新邻居，聊得超开心！", "集市上那家水果铺今天人好多，下次一起去？", "我话多吗？我觉得小镇上大家都挺爱聊天的。"] },
+    { key: "nerd", label: "学术型", color: "#c084fc",
       likes: ["图书馆"], dislikes: ["集市"],
-      chat: [
-        "新读到一本书，讲小镇经济循环的，很有意思。",
-        "今天花 30 金币买了杯咖啡，但我觉得图书馆更值。",
-        "你信玄学吗？我最近在读一本关于概率的书。",
-      ],
-    },
-    {
-      key: "adventurer", label: "冒险型", color: "#fb923c",
+      chat: ["新读到一本书，讲小镇经济循环的，很有意思。", "今天花 30 金币买了杯咖啡，但我觉得图书馆更值。", "你信玄学吗？我最近在读一本关于概率的书。"] },
+    { key: "adventurer", label: "冒险型", color: "#fb923c",
       likes: ["集市", "公园"], dislikes: ["小住宅"],
-      chat: [
-        "今天去了集市最北边，看到了一家新开的面包房！",
-        "冒险不是去哪，是愿意多走一步。",
-        "今晚在公园散步的时候看到一只猫，超可爱。",
-      ],
-    },
+      chat: ["今天去了集市最北边，看到了一家新开的面包房！", "冒险不是去哪，是愿意多走一步。", "今晚在公园散步的时候看到一只猫，超可爱。"] },
   ];
 
   function makeNpcs() {
     const npcs = [];
     const startPoints = [
-      { x: 150, y: 450 },
-      { x: 700, y: 430 },
-      { x: 450, y: 130 },
-      { x: 430, y: 420 },
-      { x: 470, y: 410 },
-      { x: 140, y: 150 },
-      { x: 690, y: 140 },
-      { x: 420, y: 430 },
+      { x: 150, y: 450 }, { x: 700, y: 430 }, { x: 450, y: 130 }, { x: 430, y: 420 },
+      { x: 470, y: 410 }, { x: 140, y: 150 }, { x: 690, y: 140 }, { x: 420, y: 430 },
     ];
     startPointsRef = startPoints;
     NAMES.forEach((name, i) => {
       const p = PERSONALITIES[i % PERSONALITIES.length];
       npcs.push({
-        id: i,
-        name,
-        personality: p,
-        x: startPoints[i].x,
-        y: startPoints[i].y,
-        r: 10,
-        target: null,
-        speed: 0.8 + Math.random() * 0.6,
+        id: i, name, personality: p,
+        x: startPoints[i].x, y: startPoints[i].y, r: 10,
+        target: null, speed: 0.8 + Math.random() * 0.6,
         gold: 50 + Math.floor(Math.random() * 80),
-        home: POIS[i % 2 === 0 ? 3 : 4], // 住在家附近
-        lastActionAt: gameTime,
-        mood: "normal",
+        home: POIS[i % 2 === 0 ? 3 : 4],
+        lastActionAt: gameTime, mood: "normal",
         emoji: ["🙂", "😄", "😎", "🤓"][i % 4],
-        chatOpen: false,
-        chatLines: p.chat,
+        chatOpen: false, chatLines: p.chat,
       });
     });
     return npcs;
   }
-
   const npcs = makeNpcs();
 
-  // ---------- 巡游（寻路简化版：直线 + 避障） ----------
+  // ---------- 巡游 ----------
   function pickNextTarget(npc) {
-    // 偏好：60% 喜欢的地点，30% 随机地点，10% 回家
     const roll = Math.random();
     if (roll < 0.1 && !npc.chatOpen) {
       npc.target = npc.home;
@@ -146,42 +116,29 @@
 
   function moveToward(npc, dt) {
     if (!npc.target || npc.chatOpen) return;
-    // 目标点：POI 中心附近（确定性，避免每 tick 随机抖动）
+    // 确定性目标点：POI 中心，避免每 tick 随机抖动
     const tx = npc.target.x + npc.target.w / 2;
     const ty = npc.target.y + npc.target.h / 2;
-    const dx = tx - npc.x;
-    const dy = ty - npc.y;
+    const dx = tx - npc.x, dy = ty - npc.y;
     const dist = Math.hypot(dx, dy);
-    if (dist < 4) {
-      arrivePoi(npc);
-      return;
-    }
+    if (dist < 4) { arrivePoi(npc); return; }
     const step = npc.speed * 0.3 * dt;
     npc.x += (dx / dist) * step;
     npc.y += (dy / dist) * step;
-    // 边界约束
-    npc.x = Math.max(npc.r, Math.min(W - npc.r, npc.x));
-    npc.y = Math.max(npc.r + 30, Math.min(H - npc.r, npc.y));
+    npc.x = Math.max(npc.r, Math.min(DESIGN_W - npc.r, npc.x));
+    npc.y = Math.max(npc.r + 30, Math.min(DESIGN_H - npc.r, npc.y));
   }
 
   function arrivePoi(npc) {
     const poi = npc.target;
     npc.target = null;
-    // 到达后可能消费
-    if (poi.price > 0 && Math.random() < 0.7) {
-      consume(npc, poi);
-    } else {
-      say(npc, randomFrom(npc.personality.chat));
-    }
-    // 不是每次到达都立刻选下一目标，减少事件噪音
+    if (poi.price > 0 && Math.random() < 0.7) consume(npc, poi);
+    else say(npc, randomFrom(npc.personality.chat));
     if (Math.random() < 0.4) pickNextTarget(npc);
   }
 
   function consume(npc, poi) {
-    if (npc.gold < poi.price) {
-      say(npc, "金币不够，这次不买了。");
-      return;
-    }
+    if (npc.gold < poi.price) { say(npc, "金币不够，这次不买了。"); return; }
     npc.gold -= poi.price;
     poi.stock = Math.max(0, poi.stock - 1);
     addEvent(`${npc.name} 在${poi.name}花了 ${poi.price} 金币`, "money");
@@ -195,151 +152,254 @@
     speechEl.textContent = `${npc.name}：${text}`;
     speechEl.classList.remove("hidden");
     clearTimeout(say._t);
-    say._t = setTimeout(() => {
-      speechEl.classList.add("hidden");
-      lastActive = null;
-    }, 2800);
+    say._t = setTimeout(() => { speechEl.classList.add("hidden"); lastActive = null; }, 2800);
     addEvent(`${npc.name} 说：${text}`, "speak");
   }
+  function randomFrom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-  function randomFrom(arr) {
-    return arr[Math.floor(Math.random() * arr.length)];
-  }
+  // ---------- 事件：字幕条 + 全日志 ----------
+  const tickerTrack = document.getElementById("tickerTrack");
+  const tickerLog = document.getElementById("tickerLog");
+  const tickerExpand = document.getElementById("tickerExpand");
+  const events = []; // 全量缓冲（最近 60 条）
+  let tickerLogBody = null;
 
-  // ---------- 事件日志 ----------
-  const eventLog = document.getElementById("eventLog");
   function addEvent(text, kind = "") {
-    const li = document.createElement("li");
-    li.textContent = `[${clockText()}] ${text}`;
-    if (kind) li.className = kind;
-    eventLog.prepend(li);
-    while (eventLog.children.length > 60) eventLog.removeChild(eventLog.lastChild);
+    const time = clockText();
+    events.unshift({ time, text, kind });
+    if (events.length > 60) events.pop();
+    renderTicker();
+    if (tickerLog.classList.contains("open")) renderLog();
   }
+
+  function renderTicker() {
+    const items = events.slice(0, 3);
+    tickerTrack.innerHTML = "";
+    for (const e of items) {
+      const el = document.createElement("span");
+      el.className = `ticker-item ${e.kind}`;
+      const dot = document.createElement("i");
+      dot.className = "dot";
+      const label = document.createElement("span");
+      label.textContent = e.text;
+      el.appendChild(dot); el.appendChild(label);
+      tickerTrack.appendChild(el);
+    }
+  }
+
+  function renderLog() {
+    if (!tickerLogBody) {
+      tickerLogBody = document.createElement("div");
+      tickerLogBody.className = "log-body";
+      tickerLog.appendChild(tickerLogBody);
+    }
+    tickerLogBody.innerHTML = "";
+    for (const e of events) {
+      const li = document.createElement("li");
+      li.className = e.kind;
+      const dot = document.createElement("i");
+      dot.className = "dot";
+      const t = document.createElement("span");
+      t.className = "log-time";
+      t.textContent = e.time;
+      const msg = document.createElement("span");
+      msg.textContent = e.text;
+      li.appendChild(dot); li.appendChild(t); li.appendChild(msg);
+      tickerLogBody.appendChild(li);
+    }
+    tickerLogBody.scrollTop = 0;
+  }
+
+  tickerExpand.addEventListener("click", () => {
+    const open = tickerLog.classList.toggle("open");
+    tickerExpand.textContent = open ? "⌃" : "⌄";
+    tickerExpand.setAttribute("aria-label", open ? "收起全部事件" : "展开全部事件");
+    if (open) renderLog();
+  });
 
   // ---------- 时钟 / 昼夜 ----------
   const clockEl = document.getElementById("clock");
   const dayLabelEl = document.getElementById("daylabel");
+  const nightveil = document.getElementById("nightveil");
+
   function clockText() {
     const totalMin = Math.floor(gameTime) % DAY_LENGTH;
-    const h = Math.floor(totalMin / 60);
-    const m = totalMin % 60;
+    const h = Math.floor(totalMin / 60), m = totalMin % 60;
     return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
   }
+
+  // 昼夜等级 0..1（连续，用于蒙层与配色插值）
   function daylight() {
-    // 0-6:00 夜 → 6-8:00 晨 → 8-18:00 昼 → 18-21:00 暮 → 21-24:00 夜
     const t = (gameTime / 60) % 24;
-    if (t < 6 || t >= 21) return 0.18;
-    if (t < 8) return 0.55;
-    if (t < 18) return 1.0;
-    if (t < 21) return 0.4;
-    return 0.18;
+    if (t < 5) return 0.12;
+    if (t < 7) return 0.12 + (t - 5) / 2 * 0.88;   // 清晨 5→7
+    if (t < 17) return 1.0;                          // 白天
+    if (t < 20) return 1.0 - (t - 17) / 3 * 0.8;      // 黄昏 17→20
+    if (t < 21.5) return 0.2 - (t - 20) / 1.5 * 0.08;  // 入夜
+    return 0.12;
   }
 
-  // ---------- 绘制 ----------
-  function draw() {
+  function updateVeil() {
     const light = daylight();
-    // 背景天空渐变
-    const g = ctx.createLinearGradient(0, 0, 0, H);
-    if (light > 0.7) {
-      g.addColorStop(0, "#7ec8ff");
-      g.addColorStop(1, "#d8efff");
-    } else if (light > 0.3) {
-      g.addColorStop(0, "#2c3e6b");
-      g.addColorStop(1, "#6b88b5");
-    } else {
-      g.addColorStop(0, "#0a1230");
-      g.addColorStop(1, "#1e2a55");
-    }
+    // 夜晚蒙层：light 越低越暗
+    const veilOpacity = light < 0.6 ? (0.6 - light) * 1.1 : 0;
+    nightveil.style.opacity = Math.min(0.85, veilOpacity).toFixed(3);
+  }
+
+  // ---------- 绘制（世界坐标 → 屏幕坐标） ----------
+  function draw() {
+    ctx.save();
+    ctx.fillStyle = "#0b0f24"; // 视口外留黑，让小镇世界有"框"
+    ctx.fillRect(0, 0, cssW, cssH);
+
+    ctx.translate(offX, offY);
+    ctx.scale(scale, scale);
+
+    const light = daylight();
+
+    // 天空
+    const g = ctx.createLinearGradient(0, 0, 0, DESIGN_H);
+    if (light > 0.75) { g.addColorStop(0, "#8fd0ff"); g.addColorStop(1, "#cfeaff"); }
+    else if (light > 0.45) { g.addColorStop(0, "#3a568f"); g.addColorStop(1, "#7fa8d0"); }
+    else if (light > 0.2) { g.addColorStop(0, "#1a2548"); g.addColorStop(1, "#3a4a75"); }
+    else { g.addColorStop(0, "#0a1030"); g.addColorStop(1, "#1a2650"); }
     ctx.fillStyle = g;
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, 0, DESIGN_W, DESIGN_H);
 
     // 草地
-    ctx.fillStyle = light > 0.7 ? "#8bc34a" : light > 0.3 ? "#5a7c3f" : "#2a3a25";
-    ctx.fillRect(0, 100, W, H - 100);
+    const grassCol = light > 0.75 ? "#8bc34a" : light > 0.45 ? "#6a9c45" : light > 0.2 ? "#3f5c33" : "#243a20";
+    ctx.fillStyle = grassCol;
+    ctx.fillRect(0, 100, DESIGN_W, DESIGN_H - 100);
 
-    // 道路（横向 + 纵向）
-    ctx.fillStyle = light > 0.5 ? "#cfd8dc" : "#455a64";
-    ctx.fillRect(0, 340, W, 30); // 横向
-    ctx.fillRect(320, 0, 30, H); // 纵向
-    ctx.fillRect(560, 0, 24, H); // 纵向
+    // 道路
+    const roadCol = light > 0.5 ? "#cfd8dc" : light > 0.2 ? "#5a6a78" : "#2e3a48";
+    ctx.fillStyle = roadCol;
+    ctx.fillRect(0, 340, DESIGN_W, 30);
+    ctx.fillRect(320, 0, 30, DESIGN_H);
+    ctx.fillRect(560, 0, 24, DESIGN_H);
+    // 车道中线
+    ctx.strokeStyle = "rgba(255,255,255,0.25)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([10, 8]);
+    ctx.beginPath(); ctx.moveTo(0, 355); ctx.lineTo(DESIGN_W, 355); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(335, 0); ctx.lineTo(335, DESIGN_H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(572, 0); ctx.lineTo(572, DESIGN_H); ctx.stroke();
+    ctx.setLineDash([]);
 
     // POI
-    for (const p of POIS) {
-      ctx.fillStyle = p.color;
-      roundRect(p.x, p.y, p.w, p.h, 10);
-      ctx.fill();
-      ctx.strokeStyle = "rgba(0,0,0,0.25)";
-      ctx.lineWidth = 2;
-      roundRect(p.x, p.y, p.w, p.h, 10);
-      ctx.stroke();
-      // 图标
-      ctx.font = "28px serif";
-      ctx.fillText(p.icon, p.x + 10, p.y + 34);
-      // 名称
-      ctx.font = "bold 14px sans-serif";
-      ctx.fillStyle = "white";
-      ctx.fillText(p.name, p.x + 46, p.y + 30);
-      // 库存
-      if (p.price > 0) {
-        ctx.font = "12px sans-serif";
-        ctx.fillStyle = "#fff7d6";
-        ctx.fillText(`库存 ${p.stock} · ${p.price}金币`, p.x + 10, p.y + p.h - 10);
-      }
-    }
+    for (const p of POIS) drawPoi(p, light);
+
+    // 夜间：路灯（只在 light < 0.5 时点亮）
+    if (light < 0.5) drawLampPosts(light);
 
     // NPC
-    for (const npc of npcs) {
-      // 阴影
-      ctx.fillStyle = "rgba(0,0,0,0.25)";
-      ctx.beginPath();
-      ctx.ellipse(npc.x, npc.y + npc.r, npc.r, npc.r * 0.4, 0, 0, Math.PI * 2);
-      ctx.fill();
-      // 身体
-      ctx.fillStyle = npc.personality.color;
-      ctx.beginPath();
-      ctx.arc(npc.x, npc.y, npc.r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = "white";
-      ctx.lineWidth = 2;
-      ctx.stroke();
-      // 表情
-      ctx.font = "11px sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(npc.emoji, npc.x, npc.y + 1);
-      ctx.textAlign = "left";
-      ctx.textBaseline = "alphabetic";
-      // 名字
-      ctx.font = "11px sans-serif";
-      ctx.fillStyle = "white";
-      ctx.strokeStyle = "rgba(0,0,0,0.6)";
-      ctx.lineWidth = 3;
-      ctx.strokeText(npc.name, npc.x - 16, npc.y - npc.r - 4);
-      ctx.fillText(npc.name, npc.x - 16, npc.y - npc.r - 4);
-      // 目标指示
-      if (npc.target && !npc.chatOpen) {
-        ctx.strokeStyle = "rgba(255,255,255,0.25)";
-        ctx.setLineDash([4, 4]);
-        ctx.beginPath();
-        ctx.moveTo(npc.x, npc.y);
-        ctx.lineTo(npc.target.x + npc.target.w / 2, npc.target.y + npc.target.h / 2);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
+    for (const npc of npcs) drawNpc(npc, light);
+
+    ctx.restore();
+    updateVeil();
+  }
+
+  function drawPoi(p, light) {
+    const dim = light > 0.4 ? 1 : 0.8; // 夜间轻微压暗 POI 颜色
+    ctx.save();
+    ctx.globalAlpha = dim;
+    ctx.fillStyle = p.color;
+    roundRect(p.x, p.y, p.w, p.h, 12);
+    ctx.fill();
+    // 顶部高光条（让建筑有立体感）
+    ctx.fillStyle = "rgba(255,255,255,0.10)";
+    roundRect(p.x, p.y, p.w, 18, 12);
+    ctx.fill();
+    // 描边
+    ctx.strokeStyle = "rgba(0,0,0,0.28)";
+    ctx.lineWidth = 2;
+    roundRect(p.x, p.y, p.w, p.h, 12);
+    ctx.stroke();
+    // 图标
+    ctx.font = "26px serif";
+    ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+    ctx.globalAlpha = 1;
+    ctx.fillText(p.icon, p.x + 12, p.y + 36);
+    // 名称
+    ctx.font = "bold 13px 'Noto Sans SC', sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.fillText(p.name, p.x + 48, p.y + 33);
+    // 库存
+    if (p.price > 0) {
+      ctx.font = "11px 'Space Grotesk', sans-serif";
+      ctx.fillStyle = "rgba(255,247,214,0.9)";
+      ctx.fillText(`库存 ${p.stock} · ${p.price} 金币`, p.x + 12, p.y + p.h - 10);
     }
+    ctx.restore();
+  }
 
-    // 顶部状态（在画布上）
-    ctx.fillStyle = "rgba(0,0,0,0.4)";
-    ctx.fillRect(0, 0, W, 30);
-    ctx.font = "13px sans-serif";
-    ctx.fillStyle = "white";
-    ctx.fillText(`🕒 ${clockText()}  ·  第 ${dayCount} 天`, 10, 20);
-    ctx.fillText(`${paused ? "已暂停" : `速度 ${speed}x`}`, W - 90, 20);
+  // 路灯：沿横向道路 y=340 每隔一段，夜间点亮
+  function drawLampPosts(light) {
+    const glow = (0.5 - light) / 0.5; // 0..1
+    const lampY = 335;
+    for (let x = 100; x < DESIGN_W; x += 180) {
+      // 灯柱
+      ctx.strokeStyle = "#3a4a58";
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(x, lampY + 8); ctx.lineTo(x, lampY - 14); ctx.stroke();
+      // 灯头
+      ctx.fillStyle = `rgba(255,179,71,${0.5 + glow * 0.5})`;
+      ctx.beginPath(); ctx.arc(x, lampY - 16, 4, 0, Math.PI * 2); ctx.fill();
+      // 光晕
+      const rg = ctx.createRadialGradient(x, lampY - 16, 2, x, lampY - 16, 46);
+      rg.addColorStop(0, `rgba(255,179,71,${0.45 * glow})`);
+      rg.addColorStop(1, "rgba(255,179,71,0)");
+      ctx.fillStyle = rg;
+      ctx.beginPath(); ctx.arc(x, lampY - 16, 46, 0, Math.PI * 2); ctx.fill();
+    }
+  }
 
-    // 夜间蒙层
-    if (light < 0.6) {
-      ctx.fillStyle = `rgba(10, 18, 48, ${0.55 * (1 - light)})`;
-      ctx.fillRect(0, 0, W, H);
+  function drawNpc(npc, light) {
+    // 定位圈：名册点击后 1.6s 内脉冲显示
+    const locAge = npc._locateT ? (performance.now() - npc._locateT) : Infinity;
+    // 阴影
+    ctx.fillStyle = "rgba(0,0,0,0.28)";
+    ctx.beginPath();
+    ctx.ellipse(npc.x, npc.y + npc.r, npc.r, npc.r * 0.42, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // 身体
+    ctx.fillStyle = npc.personality.color;
+    ctx.beginPath();
+    ctx.arc(npc.x, npc.y, npc.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // 定位圈（记忆点：呼应暖橙 accent）
+    if (locAge < 1600) {
+      const p = locAge / 1600;
+      ctx.strokeStyle = `rgba(255,179,71,${1 - p})`;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(npc.x, npc.y, npc.r + 4 + p * 14, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    // 表情
+    ctx.font = "11px sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(npc.emoji, npc.x, npc.y + 1);
+    ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+    // 名字
+    ctx.font = "11px 'Noto Sans SC', sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.strokeStyle = "rgba(10,15,35,0.6)";
+    ctx.lineWidth = 3;
+    ctx.strokeText(npc.name, npc.x - 16, npc.y - npc.r - 5);
+    ctx.fillText(npc.name, npc.x - 16, npc.y - npc.r - 5);
+    // 目标指示
+    if (npc.target && !npc.chatOpen) {
+      ctx.strokeStyle = "rgba(255,255,255,0.22)";
+      ctx.setLineDash([4, 5]);
+      ctx.beginPath();
+      ctx.moveTo(npc.x, npc.y);
+      ctx.lineTo(npc.target.x + npc.target.w / 2, npc.target.y + npc.target.h / 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
   }
 
@@ -353,12 +413,12 @@
     ctx.closePath();
   }
 
-  // ---------- 聊天 ----------
-  const chatPanel = document.getElementById("chatPanel");
+  // ---------- 聊天（抽屉 chat tab） ----------
   const chatMeta = document.getElementById("chatMeta");
   const chatLog = document.getElementById("chatLog");
   const chatForm = document.getElementById("chatForm");
   const chatInput = document.getElementById("chatInput");
+  const drawer = document.getElementById("drawer");
 
   function openChat(npc) {
     activeNpc = npc;
@@ -367,20 +427,25 @@
     chatForm.classList.remove("hidden");
     chatLog.innerHTML = "";
     addChatMsg("npc", `你好，我是${npc.name}。今天天气${lightOf()}，要不要聊两句？`);
+    // 开抽屉 + 切到 chat tab
+    document.body.classList.add("drawer-open");
+    switchTab("chat");
+    highlightRoster(npc);
     chatInput.focus();
   }
 
   function closeChat() {
     if (activeNpc) activeNpc.chatOpen = false;
     activeNpc = null;
-    chatMeta.textContent = "点击地图上的居民开始对话";
+    chatMeta.textContent = "点击居民或名册开始对话";
     chatForm.classList.add("hidden");
     chatLog.innerHTML = "";
+    unhighlightRoster();
   }
 
   function lightOf() {
     const d = daylight();
-    return d > 0.7 ? "很好" : d > 0.3 ? "有点凉" : "挺安静";
+    return d > 0.75 ? "很好" : d > 0.45 ? "有点凉" : d > 0.2 ? "挺安静" : "夜深了";
   }
 
   function addChatMsg(role, text) {
@@ -399,20 +464,14 @@
     addChatMsg("user", text);
     activeNpc.chatOpen = true;
     const reply = respond(activeNpc, text);
-    setTimeout(() => {
-      addChatMsg("npc", reply);
-      say(activeNpc, reply);
-    }, 400 + Math.random() * 400);
+    setTimeout(() => { addChatMsg("npc", reply); say(activeNpc, reply); }, 400 + Math.random() * 400);
   });
 
-  // 规则式回复：关键词 + 性格
+  // 规则式回复
   function respond(npc, text) {
     const t = text.toLowerCase();
     const p = npc.personality;
-    // 关键词命中
-    if (/(你好|hi|hello|嗨)/i.test(t)) {
-      return `嗨，我是${npc.name}！${randomFrom(p.chat)}`;
-    }
+    if (/(你好|hi|hello|嗨)/i.test(t)) return `嗨，我是${npc.name}！${randomFrom(p.chat)}`;
     if (/(钱|金币|gold)/i.test(t)) {
       if (p.key === "saver") return `我现在有 ${npc.gold} 金币，打算攒着。节俭让我安心。`;
       if (p.key === "social") return `我现在 ${npc.gold} 金币，够请你看杯咖啡了！`;
@@ -427,58 +486,128 @@
       if (p.dislikes.includes("图书馆")) return "图书馆太安静了，我坐不住。";
       return "图书馆挺舒服的，偶尔也去看看。";
     }
-    if (/(天气|今天)/i.test(t)) {
-      return `今天${lightOf()}。小镇上的日子就是平凡而美好。`;
-    }
+    if (/(天气|今天)/i.test(t)) return `今天${lightOf()}。小镇上的日子就是平凡而美好。`;
     if (/(公园|散步|走)/i.test(t)) {
       if (p.likes.includes("公园")) return "公园是我每天必去的地方！";
       return "公园不错，有空去走走。";
     }
     if (/(集市|买东西)/i.test(t)) {
-      return `集市的库存剩 ${POIS.find((p) => p.id === "market").stock} 份，要不要看看？`;
+      const market = POIS.find((p) => p.id === "market");
+      return `集市的库存剩 ${market.stock} 份，要不要看看？`;
     }
-    // 兜底：性格风格
     return randomFrom(p.chat);
   }
 
-  // ---------- 交互 ----------
+  // ---------- 抽屉 / Tab ----------
+  const drawerTab = document.getElementById("drawerTab");
+  const drawerClose = document.getElementById("drawerClose");
+  const tabs = document.querySelectorAll(".drawer-tabs .tab");
+
+  drawerTab.addEventListener("click", () => document.body.classList.add("drawer-open"));
+  drawerClose.addEventListener("click", () => document.body.classList.remove("drawer-open"));
+
+  function switchTab(name) {
+    document.querySelectorAll(".drawer .tab").forEach((b) => b.classList.toggle("is-active", b.dataset.tab === name));
+    document.querySelectorAll(".drawer .tab-pane").forEach((pn) => pn.classList.toggle("is-active", pn.dataset.pane === name));
+    if (name === "chat") renderRosterGold();
+  }
+  tabs.forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.tab)));
+
+  // ---------- 居民名册 ----------
+  const roster = document.getElementById("roster");
+  function buildRoster() {
+    roster.innerHTML = "";
+    for (const n of npcs) {
+      const li = document.createElement("li");
+      li.tabIndex = 0;
+      li.dataset.id = n.id;
+      const avatar = document.createElement("span");
+      avatar.className = "avatar";
+      avatar.style.background = n.personality.color;
+      avatar.textContent = n.emoji;
+      const nm = document.createElement("div");
+      const nameEl = document.createElement("div");
+      nameEl.className = "r-name";
+      nameEl.textContent = n.name;
+      const typeEl = document.createElement("div");
+      typeEl.className = "r-type";
+      typeEl.textContent = n.personality.label;
+      nm.appendChild(nameEl); nm.appendChild(typeEl);
+      const gold = document.createElement("span");
+      gold.className = "r-gold";
+      gold.dataset.npc = n.id;
+      gold.textContent = `${n.gold} 金`;
+      li.appendChild(avatar); li.appendChild(nm); li.appendChild(gold);
+      li.addEventListener("click", () => { openChat(n); locateNpc(n); });
+      li.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openChat(n); locateNpc(n); } });
+      roster.appendChild(li);
+    }
+  }
+  function renderRosterGold() {
+    roster.querySelectorAll(".r-gold").forEach((el) => {
+      const n = npcs[Number(el.dataset.npc)];
+      if (n) el.textContent = `${n.gold} 金`;
+    });
+  }
+  function highlightRoster(npc) {
+    roster.querySelectorAll("li").forEach((li) => li.classList.toggle("is-chatted", Number(li.dataset.id) === npc.id));
+  }
+  function unhighlightRoster() {
+    roster.querySelectorAll("li").forEach((li) => li.classList.remove("is-chatted"));
+  }
+  function locateNpc(npc) {
+    // 在 canvas 上高亮该 NPC：画一个临时圈（通过设置临时标记，在 draw 中消费）
+    npc._locateT = performance.now();
+  }
+
+  // ---------- 经济面板 ----------
+  const totalGoldEl = document.getElementById("totalGold");
+  const shopCafeEl = document.getElementById("shopCafe");
+  const shopParkEl = document.getElementById("shopPark");
+  const shopMarketEl = document.getElementById("shopMarket");
+  function renderEconomy() {
+    totalGoldEl.textContent = npcs.reduce((s, n) => s + n.gold, 0);
+    shopCafeEl.textContent = POIS[0].stock;
+    shopParkEl.textContent = POIS[2].stock;
+    shopMarketEl.textContent = POIS[5].stock;
+  }
+
+  // ---------- canvas 点击 ----------
   canvas.addEventListener("click", (e) => {
     const rect = canvas.getBoundingClientRect();
-    const sx = (e.clientX - rect.left) * (canvas.width / rect.width);
-    const sy = (e.clientY - rect.top) * (canvas.height / rect.height);
-    // 找最近的 NPC（30 像素内）
-    let best = null, bestD = 30;
+    // 屏幕坐标 → 世界坐标
+    const wx = ((e.clientX - rect.left) - offX) / scale;
+    const wy = ((e.clientY - rect.top) - offY) / scale;
+    let best = null, bestD = 28 / scale;
     for (const n of npcs) {
-      const d = Math.hypot(n.x - sx, n.y - sy);
+      const d = Math.hypot(n.x - wx, n.y - wy);
       if (d < bestD) { bestD = d; best = n; }
     }
     if (best) {
-      if (activeNpc === best) closeChat();
+      if (activeNpc === best) { closeChat(); locateNpc(best); }
       else openChat(best);
-    } else {
-      // 点击空白处：关闭聊天
-      closeChat();
-    }
+    } else closeChat();
   });
 
-  document.getElementById("pauseBtn").addEventListener("click", (e) => {
+  // ---------- HUD 控制 ----------
+  const pauseBtn = document.getElementById("pauseBtn");
+  const speedBtn = document.getElementById("speedBtn");
+  const resetBtn = document.getElementById("resetBtn");
+
+  pauseBtn.addEventListener("click", () => {
     paused = !paused;
-    e.target.textContent = paused ? "继续" : "暂停";
+    pauseBtn.textContent = paused ? "▶" : "⏸";
+    pauseBtn.setAttribute("aria-label", paused ? "继续" : "暂停");
   });
 
-  document.getElementById("speedBtn").addEventListener("click", (e) => {
+  speedBtn.addEventListener("click", () => {
     speed = speed === 1 ? 2 : speed === 2 ? 4 : 1;
-    e.target.textContent = `${speed}x`;
+    speedBtn.textContent = `${speed}x`;
     try { localStorage.setItem("aitown_speed", String(speed)); } catch (_) {}
   });
 
-  // 聊天面板关闭按钮
-  const chatClose = document.getElementById("chatClose");
-  if (chatClose) chatClose.addEventListener("click", closeChat);
-
-  document.getElementById("resetBtn").addEventListener("click", () => {
-    if (!confirm("重置小镇？当前所有 NPC 状态、金币、库存将还原到初始。")) return;
-    // NPC 重置
+  resetBtn.addEventListener("click", () => {
+    if (!confirm("重置小镇？NPC 状态、金币、库存将还原到初始。")) return;
     for (const n of npcs) {
       n.x = startPointsRef[n.id].x;
       n.y = startPointsRef[n.id].y;
@@ -487,27 +616,27 @@
       n.chatOpen = false;
       n.emoji = ["🙂", "😄", "😎", "🤓"][n.id % 4];
     }
-    // POI 库存重置
-    for (const p of POIS) {
-      p.stock = POI_INITIAL_STOCK[p.id] ?? 0;
-    }
-    // 时间重置
+    for (const p of POIS) p.stock = POI_INITIAL_STOCK[p.id] ?? 0;
     gameTime = 9 * 60;
     dayCount = 1;
     dayLabelEl.textContent = "第 1 天";
     clockEl.textContent = clockText();
-    eventLog.innerHTML = "";
-    // 速度也回到 1x
+    events.length = 0;
+    tickerLogBody && (tickerLogBody.innerHTML = "");
     speed = 1;
-    document.getElementById("speedBtn").textContent = "1x";
+    speedBtn.textContent = "1x";
+    paused = false;
+    pauseBtn.textContent = "⏸";
     try { localStorage.removeItem("aitown_speed"); } catch (_) {}
     closeChat();
-    addEvent("小镇已重置", "speak");
+    renderTicker();
+    addEvent("小镇已重置", "day");
+    renderEconomy();
     draw();
   });
 
   // ---------- 经济/补货 ----------
-  let restockTick = 0; // 每 N 次补货写 1 条日志，避免刷屏
+  let restockTick = 0;
   const RESTOCK_LOG_EVERY = 5;
   function restock() {
     restockTick++;
@@ -517,61 +646,55 @@
       const cap = POI_INITIAL_STOCK[p.id] ?? 30;
       if (p.stock < cap) {
         p.stock = Math.min(cap, p.stock + 3);
-        if (shouldLog) addEvent(`「${p.name}」补货至 ${p.stock}（上限 ${cap}）`, "money");
+        if (shouldLog) addEvent(`「${p.name}」补货至 ${p.stock}`, "money");
       }
     }
   }
 
-  // 夜间 NPC 回 home
   function nightCheck(npc) {
-    if (npc.chatOpen) return; // 聊天中不抢目标
+    if (npc.chatOpen) return;
     const t = (gameTime / 60) % 24;
-    if ((t >= 22 || t < 6) && !npc.target) {
-      pickNextTarget(npc);
-    }
+    if ((t >= 22 || t < 6) && !npc.target) pickNextTarget(npc);
   }
 
   // ---------- 主循环 ----------
   function tick() {
-    if (!paused) {
-      const dt = TICK_MS / 1000;
-      gameTime += MINUTES_PER_TICK * speed;
-      if (gameTime >= DAY_LENGTH) {
-        gameTime -= DAY_LENGTH;
-        dayCount++;
-        dayLabelEl.textContent = `第 ${dayCount} 天`;
-        // 新一天：给 NPC 发一点津贴
-        for (const n of npcs) {
-          n.gold += 20;
-        }
-        addEvent(`新的一天！所有居民获得 20 金币津贴`, "money");
-        restock();
-      }
-      for (const n of npcs) {
-        nightCheck(n);
-        moveToward(n, dt * speed);
-      }
-      clockEl.textContent = clockText();
-      draw();
+    if (paused) return;
+    const dt = TICK_MS / 1000;
+    gameTime += MINUTES_PER_TICK * speed;
+    if (gameTime >= DAY_LENGTH) {
+      gameTime -= DAY_LENGTH;
+      dayCount++;
+      dayLabelEl.textContent = `第 ${dayCount} 天`;
+      for (const n of npcs) n.gold += 20;
+      addEvent(`新的一天！所有居民获得 20 金币津贴`, "day");
+      restock();
     }
+    for (const n of npcs) { nightCheck(n); moveToward(n, dt * speed); }
+    clockEl.textContent = clockText();
+    renderEconomy();
+    renderRosterGold();
+    draw();
   }
 
   // ---------- 启动 ----------
+  resize();
+  buildRoster();
   dayLabelEl.textContent = `第 ${dayCount} 天`;
   clockEl.textContent = clockText();
-  document.getElementById("speedBtn").textContent = `${speed}x`; // 恢复持久化速度
+  speedBtn.textContent = `${speed}x`;
+  renderTicker();
+  renderEconomy();
   draw();
   setInterval(tick, TICK_MS);
 
-  // 预热 10 次推进，让 NPC 走到目标附近
+  // 预热 10 次，让 NPC 有初始动态
   for (let i = 0; i < 10; i++) {
     gameTime += MINUTES_PER_TICK;
-    for (const n of npcs) {
-      nightCheck(n);
-      moveToward(n, 0.1);
-    }
+    for (const n of npcs) { nightCheck(n); moveToward(n, 0.1); }
     if (gameTime >= DAY_LENGTH) gameTime -= DAY_LENGTH;
   }
   clockEl.textContent = clockText();
-  addEvent("小镇开张了！点击居民可以聊天。", "speak");
+  addEvent("小镇开张了。点右下角「居民」打开面板，或直接点居民开聊。", "day");
+  draw();
 })();

@@ -28,11 +28,18 @@ python -m http.server 8080
 ### 方式 A：Git 仓库（推荐）
 
 1. 把整个目录推到 GitHub / GitLab 仓库
-2. Cloudflare Dashboard → Pages → Create a project → 选择 Git provider 并连接仓库
-3. Build settings：
-   - Build command: `echo 'no build'`（或留空）
-   - Build output directory: `.`
-   - Framework preset: `Static`
+2. Cloudflare Dashboard → Workers & Pages → Create application → **Pages** → Import an existing Git repository
+3. Set up builds and deployments：
+
+   | 配置项 | 值 |
+   |--------|-----|
+   | Production branch | `main` |
+   | Framework preset | 不选（留空） |
+   | Build command | `exit 0`（或留空） |
+   | Build output directory | 留空（默认仓库根目录） |
+
+   > 说明：Cloudflare Pages 的 "Framework presets" 是一份**具体框架列表**（React/Vite、Next.js、Nuxt、Astro、Vue、Hugo…，见 [Build configuration 文档](https://developers.cloudflare.com/pages/configuration/build-configuration/#framework-presets)），里面**没有 "Static" 这一项**——纯静态站直接留空即可。官方建议：不选预设时 Build command 填 `exit 0`，这样后续还能用 Pages Functions；Build output directory 对单仓库填根目录（留空默认）。详见 [Static HTML 指南](https://developers.cloudflare.com/pages/framework-guides/deploy-anything/)。
+
 4. 每次 push 自动构建部署
 
 ### 方式 B：Wrangler CLI
