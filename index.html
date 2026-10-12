@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI 小镇</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <h1>🏘️ AI 小镇</h1>
+      <div class="clock" id="clock">--:--</div>
+      <div class="daylabel" id="daylabel">第 1 天</div>
+      <button id="resetBtn" class="btn">重置</button>
+      <button id="pauseBtn" class="btn">暂停</button>
+      <button id="speedBtn" class="btn">1x</button>
+    </header>
+    <main class="layout">
+      <section class="canvas-wrap">
+        <canvas id="town" width="900" height="560"></canvas>
+        <div id="speech" class="speech hidden"></div>
+      </section>
+      <aside class="panels">
+        <div class="panel" id="chatPanel">
+          <div class="panel-head">
+            <h2>聊天</h2>
+            <button id="chatClose" class="icon-btn" title="关闭聊天">×</button>
+          </div>
+          <div class="chat-meta" id="chatMeta">点击地图上的居民开始对话</div>
+          <div class="chat-log" id="chatLog"></div>
+          <form id="chatForm" class="hidden">
+            <input id="chatInput" type="text" placeholder="输入消息，回车发送…" autocomplete="off" />
+            <button type="submit">发送</button>
+          </form>
+        </div>
+        <div class="panel">
+          <h2>事件日志</h2>
+          <ul id="eventLog" class="event-log"></ul>
+        </div>
+        <div class="panel">
+          <h2>经济面板</h2>
+          <div class="stats">
+            <div><span class="stat-label">总金币</span><span id="totalGold">0</span></div>
+            <div><span class="stat-label">咖啡馆</span><span id="shopCafe">0</span></div>
+            <div><span class="stat-label">公园</span><span id="shopPark">0</span></div>
+            <div><span class="stat-label">图书馆</span><span id="shopLib">0</span></div>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

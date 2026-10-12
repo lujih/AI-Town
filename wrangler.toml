@@ -1,0 +1,5 @@
+# Cloudflare Pages 静态项目配置
+# 纯静态站点：index.html + app.js + styles.css，无需构建步骤。
+# 部署命令：wrangler pages deploy . --project-name=ai-town
+name = "ai-town"
+compatibility_date = "2026-01-01"
