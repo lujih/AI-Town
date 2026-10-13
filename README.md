@@ -22,6 +22,29 @@
 - **小镇名人榜**：按天活跃分（消费 + 社交 + 聊天 + 到达加权）排序，前三名配色
 - **控制**：暂停 / 1x / 2x / 4x 速度 / 重置，速度选择持久化到 localStorage
 
+## 推送代码到 GitHub
+
+```bash
+bash push.sh
+```
+
+`push.sh` 会自动检查网络、密钥、认证，然后推送。
+
+**本机环境有两个已处理好的坑**（换机器需重新配置）：
+
+1. **`github.com:22` 在部分网络下被阻断** —— 已改为走 `ssh.github.com:443`。
+2. **`$HOME` 与 `/etc/passwd` 记录的家目录不一致** —— ssh 只认后者，读不到 `~/.ssh/config`。
+   因此用 `~/.ssh/git-ssh.sh` 包装脚本以 `-o` 显式传参绕过，仓库的 `core.sshCommand` 已指向它。
+
+首次在新机器配置：
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
+cat ~/.ssh/id_ed25519.pub      # 复制到 https://github.com/settings/keys
+git remote set-url origin git@github.com:lujih/AI-Town.git
+git config core.sshCommand "$HOME/.ssh/git-ssh.sh"
+```
+
 ## 本地运行
 
 ```bash
