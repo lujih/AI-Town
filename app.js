@@ -84,7 +84,7 @@
         id: i, name, personality: p,
         job: JOBS[i % JOBS.length],
         x: startPoints[i].x, y: startPoints[i].y, r: 10,
-        target: null, speed: 0.8 + Math.random() * 0.6,
+        target: null, speed: 1.5 + Math.random() * 1.5, // 步速：世界单位 / 游戏分钟
         gold: 50 + Math.floor(Math.random() * 80),
         home: POIS[i % 2 === 0 ? 3 : 4],
         lastActionAt: gameTime, mood: "normal",
@@ -157,7 +157,7 @@
     addEvent(`${npc.name} 前往「${npc.target.name}」`, "move");
   }
 
-  function moveToward(npc, dt) {
+  function moveToward(npc, gameMin) {
     if (!npc.target || npc.chatOpen) return;
     // 确定性目标点：POI 中心，避免每 tick 随机抖动
     const tx = npc.target.x + npc.target.w / 2;
@@ -165,7 +165,8 @@
     const dx = tx - npc.x, dy = ty - npc.y;
     const dist = Math.hypot(dx, dy);
     if (dist < 4) { arrivePoi(npc); return; }
-    const step = npc.speed * 0.3 * dt;
+    // 步距 = 个人步速 × 本 tick 推进的游戏分钟（不超过剩余距离，避免越过后抖动）
+    const step = Math.min(npc.speed * gameMin, dist);
     npc.x += (dx / dist) * step;
     npc.y += (dy / dist) * step;
     npc.x = Math.max(npc.r, Math.min(DESIGN_W - npc.r, npc.x));
@@ -851,8 +852,8 @@
   // ---------- 主循环 ----------
   function tick() {
     if (paused) return;
-    const dt = TICK_MS / 1000;
-    gameTime += MINUTES_PER_TICK * speed;
+    const gameMin = MINUTES_PER_TICK * speed; // 本 tick 推进的游戏分钟
+    gameTime += gameMin;
     if (gameTime >= DAY_LENGTH) {
       gameTime -= DAY_LENGTH;
       dayCount++;
@@ -867,7 +868,7 @@
       addEvent(`新的一天，津贴到账`, "day");
       restock();
     }
-    for (const n of npcs) { nightCheck(n); moveToward(n, dt * speed); }
+    for (const n of npcs) { nightCheck(n); moveToward(n, gameMin); }
     clockEl.textContent = clockText();
     renderPanels();
     draw();
@@ -887,7 +888,7 @@
   // 预热 10 次，让 NPC 有初始动态
   for (let i = 0; i < 10; i++) {
     gameTime += MINUTES_PER_TICK;
-    for (const n of npcs) { nightCheck(n); moveToward(n, 0.1); }
+    for (const n of npcs) { nightCheck(n); moveToward(n, MINUTES_PER_TICK); }
     if (gameTime >= DAY_LENGTH) gameTime -= DAY_LENGTH;
   }
   clockEl.textContent = clockText();
