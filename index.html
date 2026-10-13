@@ -23,6 +23,8 @@
   <div id="stage">
     <div id="town3d"></div>
     <div id="nightveil"></div>
+    <!-- 拂晓加载蒙层：一次性揭开小镇（JS 加载完成后移除） -->
+    <div id="dawnveil" aria-hidden="true"></div>
 
     <!-- 左上 HUD：时间 + 天 + 暂停/速度 -->
     <div class="hud" id="hud">
@@ -43,15 +45,34 @@
       <span>AI 小镇</span>
     </div>
 
-    <!-- 气泡 -->
-    <div id="speech" class="speech hidden"></div>
+    <!-- B3：小镇事件横幅 -->
+    <div id="eventBanner" class="event-banner hidden" role="status" aria-live="polite"></div>
+
+    <!-- 气泡：跟随说话者。装饰性（不读屏），避免每 2 秒播报一次 -->
+    <div id="speech" class="speech hidden" aria-hidden="true"></div>
+    <!-- 只听重大事件的读屏区域（新一天 / 小镇事件 / 重置） -->
+    <div id="a11yLog" class="sr-only" role="status" aria-live="polite"></div>
+
+    <!-- A4：放置模式提示 -->
+    <div id="placingHint" class="placing-hint hidden">点击地面空地放置 · 再点一次按钮取消</div>
 
     <!-- 底部"小镇播报"字幕条 -->
     <div class="ticker" id="ticker" aria-label="最近事件">
-      <div class="ticker-track" id="tickerTrack"></div>
-      <button class="ticker-expand" id="tickerExpand" aria-label="展开全部事件">⌄</button>
+      <ol class="ticker-track" id="tickerTrack" aria-label="最近三条事件"></ol>
+      <button class="ticker-expand" id="tickerExpand" aria-label="展开全部事件" aria-expanded="false" aria-controls="tickerLog">⌄</button>
     </div>
-    <div class="ticker-log" id="tickerLog" aria-label="全部事件" tabindex="0"></div>
+    <div class="ticker-log" id="tickerLog" aria-label="全部事件" tabindex="0" role="region"></div>
+
+    <!-- 首次引导：一次性列出可做的事，首次交互即消失 -->
+    <div id="onboard" class="onboard hidden" role="dialog" aria-modal="false" aria-labelledby="onboardTitle">
+      <h1 class="onboard-title" id="onboardTitle">欢迎来到小镇</h1>
+      <ul class="onboard-list">
+        <li>点任何一位居民，直接和 TA 说话</li>
+        <li>居民会在路上碰面、闲聊、各自生活</li>
+        <li>右下角「居民」里有名册、经济、关系与镇长面板</li>
+      </ul>
+      <button class="onboard-btn" id="onboardBtn">进去看看</button>
+    </div>
 
     <!-- 右下角抽屉把手 -->
     <button class="drawer-tab" id="drawerTab" aria-label="居民面板">
@@ -60,25 +81,27 @@
     </button>
   </div>
 
-  <!-- 右侧抽屉：居民名册 / 聊天 / 经济 -->
+  <!-- 右侧抽屉：居民名册 / 聊天 / 经济 / 关系 / 镇长 -->
   <aside class="drawer" id="drawer" aria-label="居民与面板">
     <header class="drawer-head">
       <button class="drawer-close" id="drawerClose" aria-label="收起面板">×</button>
-      <nav class="drawer-tabs" role="tablist">
-        <button class="tab is-active" data-tab="roster" role="tab">居民</button>
-        <button class="tab" data-tab="chat" role="tab">聊天</button>
-        <button class="tab" data-tab="economy" role="tab">经济</button>
+      <nav class="drawer-tabs" role="tablist" aria-label="面板切换">
+        <button class="tab is-active" data-tab="roster" role="tab" aria-selected="true" aria-controls="pane-roster">居民</button>
+        <button class="tab" data-tab="chat" role="tab" aria-selected="false" aria-controls="pane-chat">聊天</button>
+        <button class="tab" data-tab="economy" role="tab" aria-selected="false" aria-controls="pane-economy">经济</button>
+        <button class="tab" data-tab="relations" role="tab" aria-selected="false" aria-controls="pane-relations">关系</button>
+        <button class="tab" data-tab="mayor" role="tab" aria-selected="false" aria-controls="pane-mayor">镇长</button>
       </nav>
     </header>
 
-    <section class="tab-pane is-active" data-pane="roster">
-      <p class="pane-hint">点名字定位并开聊。颜色是性格。</p>
+    <section class="tab-pane is-active" data-pane="roster" id="pane-roster" role="tabpanel" aria-label="居民名册">
+      <p class="pane-hint">点名字定位并开聊。颜色是性格，条是当前倾向。</p>
       <ul class="roster" id="roster"></ul>
     </section>
 
-    <section class="tab-pane" data-pane="chat">
+    <section class="tab-pane" data-pane="chat" id="pane-chat" role="tabpanel" aria-label="聊天">
       <div class="chat-meta" id="chatMeta">点击居民或名册开始对话</div>
-      <div class="chat-log" id="chatLog"></div>
+      <div class="chat-log" id="chatLog" role="log" aria-live="polite"></div>
       <form id="chatForm" class="hidden">
         <input id="chatInput" type="text" placeholder="说点什么…" autocomplete="off" aria-label="消息" />
         <button type="submit">发送</button>
@@ -92,10 +115,11 @@
       </form>
     </section>
 
-    <section class="tab-pane" data-pane="economy">
+    <section class="tab-pane" data-pane="economy" id="pane-economy" role="tabpanel" aria-label="经济">
       <p class="pane-hint">镇上居民共有多少家业。</p>
       <dl class="economy" id="economy">
         <div><dt>全镇金币</dt><dd id="totalGold" class="gold">0</dd></div>
+        <div><dt>小镇资金（可花）</dt><dd id="townFund" class="fund">0</dd></div>
         <div><dt>咖啡馆</dt><dd id="shopCafe">0</dd><span class="stock-line">库存 / 单价</span></div>
         <div><dt>公园</dt><dd id="shopPark">0</dd><span class="stock-line">库存 / 单价</span></div>
         <div><dt>集市</dt><dd id="shopMarket">0</dd><span class="stock-line">库存 / 单价</span></div>
@@ -103,6 +127,35 @@
       <p class="pane-hint rank-title">小镇名人榜 · 按天活跃分</p>
       <p class="rank-meta" id="rankMeta"></p>
       <ol class="leaderboard" id="leaderboard"></ol>
+    </section>
+
+    <section class="tab-pane" data-pane="relations" id="pane-relations" role="tabpanel" aria-label="关系网络">
+      <p class="pane-hint">居民之间自己聊出来的关系。线越粗聊得越多，绿色友好、红色摩擦。</p>
+      <div id="relationEmpty" class="relation-empty hidden">
+        <p>还没有人聊起来。</p>
+        <p class="empty-sub">居民在路上碰面时会自己搭话，等一会儿再看。</p>
+      </div>
+      <canvas id="relationCanvas" class="relation-canvas" width="300" height="300" aria-label="居民关系网络图"></canvas>
+      <ul class="relation-legend">
+        <li><span class="legend-line friend"></span>友好</li>
+        <li><span class="legend-line friction"></span>摩擦</li>
+        <li><span class="legend-dot"></span>数字 = 交互次数</li>
+      </ul>
+    </section>
+
+    <section class="tab-pane" data-pane="mayor" id="pane-mayor" role="tabpanel" aria-label="镇长面板">
+      <div id="mayorPanel" class="mayor-panel hidden">
+        <p class="pane-hint">镇长 <strong id="mayorName">—</strong></p>
+        <dl class="economy">
+          <div><dt>聊天次数</dt><dd data-stat="聊天次数">0</dd></div>
+          <div><dt>设定目标</dt><dd data-stat="设定目标">0</dd></div>
+          <div><dt>见证时刻</dt><dd data-stat="见证时刻">0</dd></div>
+          <div><dt>装饰放置</dt><dd data-stat="装饰放置">0</dd></div>
+        </dl>
+      </div>
+      <p class="pane-hint mayor-title">小镇装饰 · 用小镇资金装点世界</p>
+      <p class="pane-hint">选一个装饰，再点地面空地放置。居民路过时会点评。</p>
+      <div class="decor-picker" id="decorPicker"></div>
     </section>
   </aside>
 
