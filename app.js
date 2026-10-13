@@ -23,6 +23,27 @@ import * as THREE from "three";
 
   // 等轴斜俯视相机（固定，不可拖拽 → 画面稳定）
   const WORLD_SCALE = 0.4; // 逻辑单位 → 场景单位
+  // 世界原点：逻辑 (0,0) 对应场景中心布局（须先于相机/灯光定义，避免 TDZ）
+  const OX = (DESIGN_W / 2) * WORLD_SCALE;
+  const OZ = (DESIGN_H / 2) * WORLD_SCALE;
+  // 逻辑坐标 → 场景坐标（X 右、Z 下）
+  const toScene = (x, y) => new THREE.Vector3((x - DESIGN_W / 2) * WORLD_SCALE + OX, 0, (y - DESIGN_H / 2) * WORLD_SCALE + OZ);
+  const toSceneX = (x) => (x - DESIGN_W / 2) * WORLD_SCALE + OX;
+  const toSceneZ = (y) => (y - DESIGN_H / 2) * WORLD_SCALE + OZ;
+
+  // ---------- 地点（POI，须先于 3D 场景构建） ----------
+  const POIS = [
+    { id: "cafe", name: "咖啡馆", x: 70, y: 90, w: 150, h: 110, color: "#8b5a2b", icon: "☕", price: 30, stock: 50 },
+    { id: "lib", name: "图书馆", x: 700, y: 80, w: 150, h: 110, color: "#3b5998", icon: "📚", price: 0, stock: 0 },
+    { id: "park", name: "公园", x: 350, y: 380, w: 200, h: 130, color: "#4a7c3f", icon: "🌳", price: 10, stock: 30 },
+    { id: "home1", name: "小住宅", x: 90, y: 400, w: 130, h: 90, color: "#c9a227", icon: "🏠", price: 0, stock: 0 },
+    { id: "home2", name: "公寓", x: 640, y: 380, w: 150, h: 110, color: "#c9a227", icon: "🏢", price: 0, stock: 0 },
+    { id: "market", name: "集市", x: 380, y: 70, w: 180, h: 120, color: "#7b3f99", icon: "🛒", price: 20, stock: 40 },
+  ];
+  function poiAt(x, y) {
+    for (const p of POIS) if (x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h) return p;
+    return null;
+  }
   // 相机放在小镇对角方向 ~54° 俯视，收得较紧让小镇充满画面
   const cam = new THREE.PerspectiveCamera(38, 1, 1, 2000);
   const camDist = 420;
@@ -65,15 +86,7 @@ import * as THREE from "three";
     lampLights.push(pt);
   }
 
-  // 世界原点：逻辑 (0,0) 对应场景 ((DESIGN_W/2)*S, 0, (DESIGN_H/2)*S) 中心布局
-  const OX = (DESIGN_W / 2) * WORLD_SCALE;
-  const OZ = (DESIGN_H / 2) * WORLD_SCALE;
-  // 逻辑坐标 → 场景坐标（X 右、Z 下）
-  const toScene = (x, y) => new THREE.Vector3((x - DESIGN_W / 2) * WORLD_SCALE + OX, 0, (y - DESIGN_H / 2) * WORLD_SCALE + OZ);
-  const toSceneX = (x) => (x - DESIGN_W / 2) * WORLD_SCALE + OX;
-  const toSceneZ = (y) => (y - DESIGN_H / 2) * WORLD_SCALE + OZ;
-
-  // 材质工厂（低多边形卡通风）
+  // ---------- 材质工厂（低多边形卡通风） ----------
   const mat = (color, opts = {}) => new THREE.MeshStandardMaterial({
     color, roughness: 0.85, metalness: 0.0, flatShading: true, ...opts,
   });
@@ -389,20 +402,6 @@ import * as THREE from "three";
   function clampSpeed(s) { return s === 2 || s === 4 ? s : 1; }
   let lastActive = null;
   let activeNpc = null;
-
-  // ---------- 地点（POI） ----------
-  const POIS = [
-    { id: "cafe", name: "咖啡馆", x: 70, y: 90, w: 150, h: 110, color: "#8b5a2b", icon: "☕", price: 30, stock: 50 },
-    { id: "lib", name: "图书馆", x: 700, y: 80, w: 150, h: 110, color: "#3b5998", icon: "📚", price: 0, stock: 0 },
-    { id: "park", name: "公园", x: 350, y: 380, w: 200, h: 130, color: "#4a7c3f", icon: "🌳", price: 10, stock: 30 },
-    { id: "home1", name: "小住宅", x: 90, y: 400, w: 130, h: 90, color: "#c9a227", icon: "🏠", price: 0, stock: 0 },
-    { id: "home2", name: "公寓", x: 640, y: 380, w: 150, h: 110, color: "#c9a227", icon: "🏢", price: 0, stock: 0 },
-    { id: "market", name: "集市", x: 380, y: 70, w: 180, h: 120, color: "#7b3f99", icon: "🛒", price: 20, stock: 40 },
-  ];
-  function poiAt(x, y) {
-    for (const p of POIS) if (x >= p.x && x <= p.x + p.w && y >= p.y && y <= p.y + p.h) return p;
-    return null;
-  }
 
   // ---------- NPC ----------
   const NAMES = ["小北", "阿澈", "柚子", "老周", "林可", "豆豆", "阿凯", "苏苏"];
