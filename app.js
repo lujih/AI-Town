@@ -1,28 +1,382 @@
-// AI 小镇 — 单页 Canvas 模拟
-// 世界窗口：canvas 全屏铺满，HUD/字幕/抽屉悬浮其上
+// AI 小镇 — 3D 版（Three.js 低多边形小镇）
+// 世界窗口：WebGL 场景全屏铺满，HUD/字幕/抽屉悬浮其上
+// 所有模拟逻辑（巡游/聊天/目标/名人榜/事件）保持不变，只把 2D Canvas 渲染换成 Three.js
+
+import * as THREE from "three";
 
 (() => {
   "use strict";
 
-  // ---------- 画布（响应式） ----------
-  const canvas = document.getElementById("town");
-  const ctx = canvas.getContext("2d");
-  const DESIGN_W = 900, DESIGN_H = 560; // 世界坐标
-  let scale = 1, offX = 0, offY = 0, cssW = 0, cssH = 0;
+  // ---------- 3D 场景（低多边形小镇，等轴斜俯视） ----------
+  const stage = document.getElementById("town3d");
+  const DESIGN_W = 900, DESIGN_H = 560; // 世界逻辑坐标（米制缩放）
 
-  function resize() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    cssW = canvas.clientWidth || window.innerWidth;
-    cssH = canvas.clientHeight || window.innerHeight;
-    canvas.width = Math.round(cssW * dpr);
-    canvas.height = Math.round(cssH * dpr);
-    // 世界坐标 → 屏幕：等比缩放 + 居中
-    scale = Math.min(cssW / DESIGN_W, cssH / DESIGN_H);
-    offX = (cssW - DESIGN_W * scale) / 2;
-    offY = (cssH - DESIGN_H * scale) / 2;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  stage.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x0d1330, 0.0009);
+
+  // 等轴斜俯视相机（固定，不可拖拽 → 画面稳定）
+  const WORLD_SCALE = 0.4; // 逻辑单位 → 场景单位
+  // 相机放在小镇对角方向 ~54° 俯视，收得较紧让小镇充满画面
+  const cam = new THREE.PerspectiveCamera(38, 1, 1, 2000);
+  const camDist = 420;
+  const camPitch = 1.0; // 弧度，~57° 俯角
+  cam.position.set(
+    camDist * Math.sin(camPitch) * 0.7071,
+    camDist * Math.cos(camPitch),
+    camDist * Math.sin(camPitch) * 0.7071
+  );
+  cam.position.x += OX * 0.9;
+  cam.position.z += OZ * 0.9;
+  cam.lookAt(OX, 0, OZ);
+
+  // 光照：主光（随昼夜移动）+ 环境光 + 路灯点光
+  const sun = new THREE.DirectionalLight(0xfff2d8, 1.1);
+  sun.position.set(300, 420, 220);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.left = -300; sun.shadow.camera.right = 300;
+  sun.shadow.camera.top = 300; sun.shadow.camera.bottom = -300;
+  sun.shadow.camera.near = 10; sun.shadow.camera.far = 1200;
+  sun.shadow.bias = -0.0004;
+  scene.add(sun);
+  scene.add(sun.target);
+  sun.target.position.set((DESIGN_W / 2) * WORLD_SCALE, 0, (DESIGN_H / 2) * WORLD_SCALE);
+
+  const hemi = new THREE.HemisphereLight(0x8fb8ff, 0x2f4a2a, 0.5);
+  scene.add(hemi);
+
+  // 路灯（夜间点亮的点光源，最多 4 个控制性能）
+  const lampLights = [];
+  const lampPositions = [
+    { x: 240, z: 355 }, { x: 420, z: 355 },
+    { x: 335, z: 220 }, { x: 572, z: 300 },
+  ].map((p) => ({ x: p.x * WORLD_SCALE, z: p.z * WORLD_SCALE }));
+  for (const p of lampPositions) {
+    const pt = new THREE.PointLight(0xffb347, 0, 160, 1.8);
+    pt.position.set(p.x, 18, p.z);
+    scene.add(pt);
+    lampLights.push(pt);
   }
-  window.addEventListener("resize", () => { resize(); draw(); });
+
+  // 世界原点：逻辑 (0,0) 对应场景 ((DESIGN_W/2)*S, 0, (DESIGN_H/2)*S) 中心布局
+  const OX = (DESIGN_W / 2) * WORLD_SCALE;
+  const OZ = (DESIGN_H / 2) * WORLD_SCALE;
+  // 逻辑坐标 → 场景坐标（X 右、Z 下）
+  const toScene = (x, y) => new THREE.Vector3((x - DESIGN_W / 2) * WORLD_SCALE + OX, 0, (y - DESIGN_H / 2) * WORLD_SCALE + OZ);
+  const toSceneX = (x) => (x - DESIGN_W / 2) * WORLD_SCALE + OX;
+  const toSceneZ = (y) => (y - DESIGN_H / 2) * WORLD_SCALE + OZ;
+
+  // 材质工厂（低多边形卡通风）
+  const mat = (color, opts = {}) => new THREE.MeshStandardMaterial({
+    color, roughness: 0.85, metalness: 0.0, flatShading: true, ...opts,
+  });
+
+  // ---------- 地面 + 道路 ----------
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(DESIGN_W * WORLD_SCALE * 1.3, DESIGN_H * WORLD_SCALE * 1.3),
+    mat(0x6a9c45)
+  );
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.set(OX, 0, OZ);
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  const roadMat = mat(0x5a6a78);
+  // 横向路（逻辑 y=340, 高 30, 全长 900）
+  const hroad = new THREE.Mesh(new THREE.BoxGeometry(DESIGN_W * WORLD_SCALE, 0.6, 30 * WORLD_SCALE), roadMat);
+  hroad.position.set(OX, 0.3, toSceneZ(355));
+  hroad.receiveShadow = true;
+  scene.add(hroad);
+  // 两条纵向路（逻辑 x=320 w=30, x=560 w=24）
+  const vroad1 = new THREE.Mesh(new THREE.BoxGeometry(30 * WORLD_SCALE, 0.6, DESIGN_H * WORLD_SCALE), roadMat);
+  vroad1.position.set(toSceneX(335), 0.3, OZ);
+  vroad1.receiveShadow = true; scene.add(vroad1);
+  const vroad2 = new THREE.Mesh(new THREE.BoxGeometry(24 * WORLD_SCALE, 0.6, DESIGN_H * WORLD_SCALE), roadMat);
+  vroad2.position.set(toSceneX(572), 0.3, OZ);
+  vroad2.receiveShadow = true; scene.add(vroad2);
+  // 车道中线（细的浅色条）
+  const lineMat = mat(0xffffff, { emissive: 0x555555, roughness: 1 });
+  function addLaneLine(x1, z1, x2, z2) {
+    const len = Math.hypot(x2 - x1, z2 - z1);
+    const m = new THREE.Mesh(new THREE.BoxGeometry(len, 0.08, 0.6), lineMat);
+    m.position.set((x1 + x2) / 2, 0.66, (z1 + z2) / 2);
+    m.rotation.y = Math.atan2(x2 - x1, z2 - z1);
+    scene.add(m);
+  }
+  addLaneLine(toSceneX(0), toSceneZ(355), toSceneX(900), toSceneZ(355));
+  addLaneLine(toSceneX(335), toSceneZ(0), toSceneX(335), toSceneZ(560));
+  addLaneLine(toSceneX(572), toSceneZ(0), toSceneX(572), toSceneZ(560));
+
+  // ---------- 建筑（POI） ----------
+  const ROOF_STYLE = {
+    cafe:    { wall: 0xd8b06a, roof: 0x8b3a1f, h: 34 },
+    lib:     { wall: 0x4a6aa8, roof: 0x2f4570, h: 44 },
+    park:    { wall: 0x4a7c3f, roof: 0x2f5a2a, h: 0 },
+    home1:   { wall: 0xe8d08a, roof: 0xa85a2f, h: 26 },
+    home2:   { wall: 0xd0c090, roof: 0x7a6a50, h: 52 },
+    market:  { wall: 0xb070c0, roof: 0x6a3a8a, h: 22 },
+  };
+  // 公园是开放绿地 + 几棵树，不是楼
+  const POI_MESHES = {};
+  for (const p of POIS) {
+    const style = ROOF_STYLE[p.id];
+    const cx = toSceneX(p.x + p.w / 2);
+    const cz = toSceneZ(p.y + p.h / 2);
+    const w = p.w * WORLD_SCALE, h = p.h * WORLD_SCALE;
+
+    if (p.id === "park") {
+      // 公园：抬高一点的绿地 + 低矮围栏 + 树
+      const parkPlat = new THREE.Mesh(new THREE.BoxGeometry(w, 1.2, h), mat(0x5a8c3f));
+      parkPlat.position.set(cx, 0.6, cz);
+      parkPlat.receiveShadow = true; parkPlat.castShadow = true;
+      scene.add(parkPlat);
+      // 围栏
+      const fence = new THREE.Mesh(new THREE.BoxGeometry(w + 2, 1.6, h + 2), mat(0x8a6a3a, { transparent: true, opacity: 0.45 }));
+      fence.position.set(cx, 0.8, cz);
+      scene.add(fence);
+      addTrees(cx, cz, w, h, 4);
+      POI_MESHES[p.id] = { group: parkPlat };
+      continue;
+    }
+
+    // 楼体（长方体）+ 屋顶（斜四角锥台，用 4 面 + 平板顶）
+    const wallH = style.h * WORLD_SCALE * 0.5;
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, h), mat(style.wall));
+    wall.position.set(cx, wallH / 2 + 0.6, cz);
+    wall.castShadow = true; wall.receiveShadow = true;
+    scene.add(wall);
+    // 屋顶：用 4 个三角面拼（低多边形感）
+    const roofH = Math.max(6, wallH * 0.45);
+    const roofGeo = new THREE.ConeGeometry(Math.max(w, h) * 0.72, roofH, 4);
+    roofGeo.rotateY(Math.PI / 4);
+    const roof = new THREE.Mesh(roofGeo, mat(style.roof));
+    roof.position.set(cx, wallH + roofH / 2 + 0.6, cz);
+    roof.castShadow = true;
+    scene.add(roof);
+    // 门窗（小色块贴在正面，增加细节）
+    const door = new THREE.Mesh(new THREE.BoxGeometry(w * 0.2, wallH * 0.45, 0.5), mat(0x2a1a0a));
+    door.position.set(cx, wallH * 0.25 + 0.6, cz + h / 2 + 0.1);
+    scene.add(door);
+    const win1 = new THREE.Mesh(new THREE.BoxGeometry(w * 0.16, wallH * 0.22, 0.5), mat(0xbfe0ff, { emissive: 0x334455 }));
+    win1.position.set(cx - w * 0.28, wallH * 0.55, cz + h / 2 + 0.1);
+    scene.add(win1);
+    const win2 = win1.clone(); win2.position.x = cx + w * 0.28; scene.add(win2);
+    POI_MESHES[p.id] = { wall, roof };
+  }
+
+  function addTrees(cx, cz, w, h, count) {
+    for (let i = 0; i < count; i++) {
+      const tx = cx + (Math.random() - 0.5) * w * 0.8;
+      const tz = cz + (Math.random() - 0.5) * h * 0.8;
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.9, 4, 5), mat(0x6a4a2a));
+      trunk.position.set(tx, 2 + 1.2, tz); trunk.castShadow = true;
+      const leaf = new THREE.Mesh(new THREE.ConeGeometry(2.4 + Math.random() * 1.2, 5 + Math.random() * 2, 6), mat(0x3f7c3f));
+      leaf.position.set(tx, 5 + 1.2, tz); leaf.castShadow = true;
+      scene.add(trunk); scene.add(leaf);
+    }
+  }
+
+  // 路边零星树（让小镇不空）
+  for (let i = 0; i < 10; i++) {
+    const side = i % 2;
+    const tx = side === 0 ? toSceneX(350 + Math.random() * 40) : toSceneX(600 + Math.random() * 60);
+    const tz = toSceneZ(120 + Math.random() * 300);
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.8, 3.2, 5), mat(0x5a3a1a));
+    trunk.position.set(tx, 1.6, tz); trunk.castShadow = true;
+    const leaf = new THREE.Mesh(new THREE.IcosahedronGeometry(2 + Math.random(), 0), mat(0x3f7c3f));
+    leaf.position.set(tx, 4.4, tz); leaf.castShadow = true;
+    scene.add(trunk); scene.add(leaf);
+  }
+
+  // ---------- 路灯（3D 柱体 + 夜间点光） ----------
+  const lampMeshes = [];
+  for (const p of lampPositions) {
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.5, 16, 6), mat(0x3a4a58));
+    pole.position.set(p.x, 8, p.z); pole.castShadow = true;
+    const head = new THREE.Mesh(new THREE.SphereGeometry(1.1, 8, 8), mat(0xffd27a, { emissive: 0xff9524, emissiveIntensity: 0.2 }));
+    head.position.set(p.x, 16.6, p.z);
+    head.userData.isLampHead = true;
+    scene.add(pole); scene.add(head);
+    lampMeshes.push(head);
+  }
+
+  // ---------- NPC（低多边形小人：圆角身体 + 头 + 表情贴片） ----------
+  const NPC_GROUP = new THREE.Group();
+  scene.add(NPC_GROUP);
+  const nameSprites = {}; // npc.id -> sprite
+
+  // 用 canvas 贴图做名字标牌 + 表情
+  function makeTextSprite(text, { bg = "rgba(13,19,48,0.78)", color = "#e8ecff", size = 40, pad = 12 } = {}) {
+    const cv = document.createElement("canvas");
+    cv.width = 256; cv.height = 96;
+    const c = cv.getContext("2d");
+    c.fillStyle = bg;
+    roundRectC(c, 4, 4, cv.width - 8, cv.height - 8, 20);
+    c.fill();
+    c.strokeStyle = "rgba(255,179,71,0.5)"; c.lineWidth = 3;
+    roundRectC(c, 4, 4, cv.width - 8, cv.height - 8, 20);
+    c.stroke();
+    c.font = `700 ${size}px "Noto Sans SC", sans-serif`;
+    c.fillStyle = color;
+    c.textAlign = "center"; c.textBaseline = "middle";
+    c.fillText(text, cv.width / 2, cv.height / 2 - 10, cv.width - 20);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+    sp.scale.set(16, 6, 1);
+    sp.renderOrder = 999;
+    return sp;
+  }
+  function roundRectC(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+
+  function buildNpcMesh(npc) {
+    const g = new THREE.Group();
+    // 身体（胶囊感：圆柱 + 顶球）
+    const bodyMat = mat(new THREE.Color(npc.personality.color));
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.6, 4.4, 10), bodyMat);
+    body.position.y = 2.6; body.castShadow = true;
+    const head = new THREE.Mesh(new THREE.SphereGeometry(1.5, 12, 10), mat(0xf0d8c0));
+    head.position.y = 5.6; head.castShadow = true;
+    // 表情（一个扁平的圆形贴片贴头上）
+    const face = new THREE.Mesh(
+      new THREE.CircleGeometry(0.85, 12),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.92 })
+    );
+    face.position.set(0, 5.7, 1.35);
+    g.add(body); g.add(head); g.add(face);
+
+    // 名字标牌
+    const spr = makeTextSprite(npc.name, { color: "#ffffff", size: 44 });
+    spr.position.y = 9;
+    g.add(spr);
+    nameSprites[npc.id] = spr;
+
+    // 定位圈（名册点击时 1.6s 内脉冲）
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(2.2, 2.6, 32),
+      new THREE.MeshBasicMaterial({ color: 0xffb347, transparent: true, opacity: 0, side: THREE.DoubleSide })
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.2;
+    ring.userData.isRing = true;
+    g.add(ring);
+    npc._ring = ring;
+
+    NPC_GROUP.add(g);
+    npc._mesh = g;
+    g.position.set(toSceneX(npc.x), 0.6, toSceneZ(npc.y));
+    return g;
+  }
+
+  // ---------- 昼夜光照系统 ----------
+  function updateSun(light) {
+    // 太阳高度 & 颜色随 light 变
+    const sunH = 80 + light * 380;
+    sun.position.set(300 - light * 180, sunH, 220 - light * 80);
+    sun.intensity = 0.12 + light * 1.0;
+    sun.color.setHSL(0.09, 0.5, 0.55 + light * 0.35);
+    hemi.intensity = 0.18 + light * 0.5;
+    // 天空色（通过 fog + 背景）
+    const skyDay = new THREE.Color(0x8fd0ff);
+    const skyDusk = new THREE.Color(0x3a568f);
+    const skyNight = new THREE.Color(0x0a1030);
+    const c = light > 0.5 ? skyDay.clone().lerp(skyDusk, (0.5 - (light - 0.5)) * 2) : skyDusk.clone().lerp(skyNight, (0.5 - light) * 2);
+    scene.background = c;
+    scene.fog.color.copy(c);
+    // 路灯 & 库存窗光
+    const lampOn = light < 0.45 ? (0.45 - light) / 0.45 : 0;
+    for (const pt of lampLights) pt.intensity = lampOn * 2.4;
+    for (const m of lampMeshes) m.material.emissiveIntensity = 0.2 + lampOn * 1.4;
+    // 夜晚地面整体压暗（材质 color 不逐帧改，用 hemi + 太阳已经够）
+  }
+
+  function updateVeil() {
+    const light = daylight();
+    updateSun(light);
+    // DOM 蒙层保留（HUD 可读性）
+    const veilOpacity = light < 0.6 ? (0.6 - light) * 0.9 : 0;
+    nightveil.style.opacity = Math.min(0.5, veilOpacity).toFixed(3);
+  }
+
+  // ---------- 渲染循环（每帧重绘 3D） ----------
+  function draw() {
+    // NPC 位置 + 朝向
+    for (const npc of npcs) {
+      if (!npc._mesh) continue;
+      npc._mesh.position.x = toSceneX(npc.x);
+      npc._mesh.position.z = toSceneZ(npc.y);
+      // 朝目标点转
+      if (npc.target && !npc.chatOpen) {
+        const tx = toSceneX(npc.target.x + npc.target.w / 2);
+        const tz = toSceneZ(npc.target.y + npc.target.h / 2);
+        npc._mesh.rotation.y = Math.atan2(tx - npc._mesh.position.x, tz - npc._mesh.position.z);
+      }
+      // 走路上下轻微起伏
+      const t = performance.now() * 0.004;
+      npc._mesh.position.y = 0.6 + (npc.target && !npc.chatOpen ? Math.abs(Math.sin(t + npc.id)) * 0.4 : 0);
+      // 定位圈脉冲
+      const locAge = npc._locateT ? (performance.now() - npc._locateT) : Infinity;
+      if (npc._ring) {
+        if (locAge < 1600) {
+          const p = locAge / 1600;
+          npc._ring.material.opacity = 0.9 * (1 - p);
+          const s = 1 + p * 2.2;
+          npc._ring.scale.setScalar(s);
+        } else npc._ring.material.opacity = 0;
+      }
+    }
+    updateVeil();
+    renderer.render(scene, cam);
+  }
+
+  // 屏幕坐标 → 场景坐标 → 逻辑坐标（用于点击拾取）
+  const _ray = new THREE.Raycaster();
+  const _ndc = new THREE.Vector2();
+  function screenToLogic(clientX, clientY) {
+    const rect = renderer.domElement.getBoundingClientRect();
+    _ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    _ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    _ray.setFromCamera(_ndc, cam);
+    const hit = _ray.intersectObject(ground)[0];
+    if (!hit) return null;
+    const wx = (hit.point.x - OX) / WORLD_SCALE + DESIGN_W / 2;
+    const wy = (hit.point.z - OZ) / WORLD_SCALE + DESIGN_H / 2;
+    return { x: wx, y: wy };
+  }
+  function logicToScreen(npc) {
+    const v = toScene(npc.x, npc.y);
+    v.y = 6; // 取 NPC 头部高度做投影
+    v.project(cam);
+    return {
+      x: (v.x * 0.5 + 0.5) * renderer.domElement.clientWidth,
+      y: (-v.y * 0.5 + 0.5) * renderer.domElement.clientHeight,
+    };
+  }
+
+  // ---------- 响应式 ----------
+  function resize() {
+    const w = stage.clientWidth || window.innerWidth;
+    const h = stage.clientHeight || window.innerHeight;
+    renderer.setSize(w, h);
+    cam.aspect = w / h;
+    cam.updateProjectionMatrix();
+  }
+  window.addEventListener("resize", resize);
 
   // ---------- 世界时间 ----------
   const DAY_LENGTH = 2400;
@@ -200,16 +554,17 @@
     say(npc, `在${poi.name}买了一份，感觉不错！`);
   }
 
-  // ---------- 说话 / 气泡（跟随说话者） ----------
+  // ---------- 说话 / 气泡（跟随说话者，投影到屏幕） ----------
   const speechEl = document.getElementById("speech");
   function say(npc, text) {
     lastActive = npc;
     speechEl.textContent = `${npc.name}：${text}`;
-    // 气泡锚定到 NPC 头顶（屏幕坐标）
-    const screenX = offX + npc.x * scale;
-    const screenY = offY + npc.y * scale;
-    speechEl.style.left = `${Math.max(120, Math.min(window.innerWidth - 120, screenX))}px`;
-    speechEl.style.top = `${Math.max(70, screenY - 46)}px`;
+    // 气泡锚定到 NPC 头顶（3D 投影到屏幕）
+    const s = logicToScreen(npc);
+    const elW = renderer.domElement.clientWidth;
+    const elH = renderer.domElement.clientHeight;
+    speechEl.style.left = `${Math.max(140, Math.min(elW - 140, s.x))}px`;
+    speechEl.style.top = `${Math.max(70, s.y - 64)}px`;
     speechEl.classList.remove("hidden");
     clearTimeout(say._t);
     say._t = setTimeout(() => { speechEl.classList.add("hidden"); lastActive = null; }, 2800);
@@ -326,178 +681,7 @@
     nightveil.style.opacity = Math.min(0.85, veilOpacity).toFixed(3);
   }
 
-  // ---------- 绘制（世界坐标 → 屏幕坐标） ----------
-  function draw() {
-    ctx.save();
-    // 视口外填天空底色（与 #nightveil 同色，避免宽屏露出黑边）
-    ctx.fillStyle = "#0d1330";
-    ctx.fillRect(0, 0, cssW, cssH);
-
-    ctx.translate(offX, offY);
-    ctx.scale(scale, scale);
-
-    const light = daylight();
-
-    // 天空
-    const g = ctx.createLinearGradient(0, 0, 0, DESIGN_H);
-    if (light > 0.75) { g.addColorStop(0, "#8fd0ff"); g.addColorStop(1, "#cfeaff"); }
-    else if (light > 0.45) { g.addColorStop(0, "#3a568f"); g.addColorStop(1, "#7fa8d0"); }
-    else if (light > 0.2) { g.addColorStop(0, "#1a2548"); g.addColorStop(1, "#3a4a75"); }
-    else { g.addColorStop(0, "#0a1030"); g.addColorStop(1, "#1a2650"); }
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, DESIGN_W, DESIGN_H);
-
-    // 草地
-    const grassCol = light > 0.75 ? "#8bc34a" : light > 0.45 ? "#6a9c45" : light > 0.2 ? "#3f5c33" : "#243a20";
-    ctx.fillStyle = grassCol;
-    ctx.fillRect(0, 100, DESIGN_W, DESIGN_H - 100);
-
-    // 道路
-    const roadCol = light > 0.5 ? "#cfd8dc" : light > 0.2 ? "#5a6a78" : "#2e3a48";
-    ctx.fillStyle = roadCol;
-    ctx.fillRect(0, 340, DESIGN_W, 30);
-    ctx.fillRect(320, 0, 30, DESIGN_H);
-    ctx.fillRect(560, 0, 24, DESIGN_H);
-    // 车道中线
-    ctx.strokeStyle = "rgba(255,255,255,0.25)";
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([10, 8]);
-    ctx.beginPath(); ctx.moveTo(0, 355); ctx.lineTo(DESIGN_W, 355); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(335, 0); ctx.lineTo(335, DESIGN_H); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(572, 0); ctx.lineTo(572, DESIGN_H); ctx.stroke();
-    ctx.setLineDash([]);
-
-    // POI
-    for (const p of POIS) drawPoi(p, light);
-
-    // 夜间：路灯（只在 light < 0.5 时点亮）
-    if (light < 0.5) drawLampPosts(light);
-
-    // NPC
-    for (const npc of npcs) drawNpc(npc, light);
-
-    ctx.restore();
-    updateVeil();
-  }
-
-  function drawPoi(p, light) {
-    const dim = light > 0.4 ? 1 : 0.8; // 夜间轻微压暗 POI 颜色
-    ctx.save();
-    ctx.globalAlpha = dim;
-    ctx.fillStyle = p.color;
-    roundRect(p.x, p.y, p.w, p.h, 12);
-    ctx.fill();
-    // 顶部高光条（让建筑有立体感）
-    ctx.fillStyle = "rgba(255,255,255,0.10)";
-    roundRect(p.x, p.y, p.w, 18, 12);
-    ctx.fill();
-    // 描边
-    ctx.strokeStyle = "rgba(0,0,0,0.28)";
-    ctx.lineWidth = 2;
-    roundRect(p.x, p.y, p.w, p.h, 12);
-    ctx.stroke();
-    // 图标
-    ctx.font = "26px serif";
-    ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
-    ctx.globalAlpha = 1;
-    ctx.fillText(p.icon, p.x + 12, p.y + 36);
-    // 名称
-    ctx.font = "bold 13px 'Noto Sans SC', sans-serif";
-    ctx.fillStyle = "rgba(255,255,255,0.95)";
-    ctx.fillText(p.name, p.x + 48, p.y + 33);
-    // 库存
-    if (p.price > 0) {
-      ctx.font = "11px 'Space Grotesk', sans-serif";
-      ctx.fillStyle = "rgba(255,247,214,0.9)";
-      ctx.fillText(`库存 ${p.stock} · ${p.price} 金币`, p.x + 12, p.y + p.h - 10);
-    }
-    ctx.restore();
-  }
-
-  // 路灯：沿横向道路 y=340 每隔一段，夜间点亮
-  function drawLampPosts(light) {
-    const glow = (0.5 - light) / 0.5; // 0..1
-    const lampY = 335;
-    for (let x = 100; x < DESIGN_W; x += 180) {
-      // 灯柱
-      ctx.strokeStyle = "#3a4a58";
-      ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.moveTo(x, lampY + 8); ctx.lineTo(x, lampY - 14); ctx.stroke();
-      // 灯头
-      ctx.fillStyle = `rgba(255,179,71,${0.5 + glow * 0.5})`;
-      ctx.beginPath(); ctx.arc(x, lampY - 16, 4, 0, Math.PI * 2); ctx.fill();
-      // 光晕
-      const rg = ctx.createRadialGradient(x, lampY - 16, 2, x, lampY - 16, 46);
-      rg.addColorStop(0, `rgba(255,179,71,${0.45 * glow})`);
-      rg.addColorStop(1, "rgba(255,179,71,0)");
-      ctx.fillStyle = rg;
-      ctx.beginPath(); ctx.arc(x, lampY - 16, 46, 0, Math.PI * 2); ctx.fill();
-    }
-  }
-
-  function drawNpc(npc, light) {
-    // 定位圈：名册点击后 1.6s 内脉冲显示
-    const locAge = npc._locateT ? (performance.now() - npc._locateT) : Infinity;
-    // 阴影
-    ctx.fillStyle = "rgba(0,0,0,0.28)";
-    ctx.beginPath();
-    ctx.ellipse(npc.x, npc.y + npc.r, npc.r, npc.r * 0.42, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // 身体（夜间轻微压暗，呼应路灯）
-    const bodyAlpha = light > 0.4 ? 1 : 0.85;
-    ctx.save();
-    ctx.globalAlpha = bodyAlpha;
-    ctx.fillStyle = npc.personality.color;
-    ctx.beginPath();
-    ctx.arc(npc.x, npc.y, npc.r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = "rgba(255,255,255,0.85)";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.restore();
-    // 定位圈（记忆点：呼应暖橙 accent）
-    if (locAge < 1600) {
-      const p = locAge / 1600;
-      ctx.strokeStyle = `rgba(255,179,71,${1 - p})`;
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.arc(npc.x, npc.y, npc.r + 4 + p * 14, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    // 表情
-    ctx.font = "11px sans-serif";
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(npc.emoji, npc.x, npc.y + 1);
-    ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
-    // 名字
-    ctx.font = "11px 'Noto Sans SC', sans-serif";
-    ctx.fillStyle = "rgba(255,255,255,0.95)";
-    ctx.strokeStyle = "rgba(10,15,35,0.6)";
-    ctx.lineWidth = 3;
-    ctx.strokeText(npc.name, npc.x - 16, npc.y - npc.r - 5);
-    ctx.fillText(npc.name, npc.x - 16, npc.y - npc.r - 5);
-    // 目标指示
-    if (npc.target && !npc.chatOpen) {
-      ctx.strokeStyle = "rgba(255,255,255,0.22)";
-      ctx.setLineDash([4, 5]);
-      ctx.beginPath();
-      ctx.moveTo(npc.x, npc.y);
-      ctx.lineTo(npc.target.x + npc.target.w / 2, npc.target.y + npc.target.h / 2);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
-  }
-
-  function roundRect(x, y, w, h, r) {
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.arcTo(x + w, y, x + w, y + h, r);
-    ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.arcTo(x, y + h, x, y, r);
-    ctx.arcTo(x, y, x + w, y, r);
-    ctx.closePath();
-  }
+  // ---------- 旧 2D 绘制已移除（改用上面的 Three.js draw） ----------
 
   // ---------- 聊天（抽屉 chat tab） ----------
   const chatMeta = document.getElementById("chatMeta");
@@ -699,7 +883,7 @@
     roster.querySelectorAll("li").forEach((li) => li.classList.remove("is-chatted"));
   }
   function locateNpc(npc) {
-    // 在 canvas 上高亮该 NPC：画一个临时圈（通过设置临时标记，在 draw 中消费）
+    // 在 3D 场景上高亮该 NPC：临时标记，draw 中消费（暖橙定位圈脉冲）
     npc._locateT = performance.now();
   }
 
@@ -756,13 +940,13 @@
     }
   }
 
-  // ---------- canvas 点击 ----------
-  canvas.addEventListener("click", (e) => {
-    const rect = canvas.getBoundingClientRect();
-    // 屏幕坐标 → 世界坐标
-    const wx = ((e.clientX - rect.left) - offX) / scale;
-    const wy = ((e.clientY - rect.top) - offY) / scale;
-    let best = null, bestD = 28 / scale;
+  // ---------- 3D 场景点击（raycast 拾取 NPC） ----------
+  renderer.domElement.addEventListener("click", (e) => {
+    const hit = screenToLogic(e.clientX, e.clientY);
+    if (!hit) { closeChat(); return; }
+    const wx = hit.x, wy = hit.y;
+    // 找最近的 NPC（3D 视角下拾取半径放宽一点）
+    let best = null, bestD = 26;
     for (const n of npcs) {
       const d = Math.hypot(n.x - wx, n.y - wy);
       if (d < bestD) { bestD = d; best = n; }
@@ -875,6 +1059,7 @@
   }
 
   // ---------- 启动 ----------
+  for (const n of npcs) buildNpcMesh(n); // 建 3D 小人
   resize();
   buildRoster();
   dayLabelEl.textContent = `第 ${dayCount} 天`;

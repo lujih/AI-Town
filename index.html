@@ -8,11 +8,20 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Noto+Sans+SC:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
+  <!-- Three.js（模块版，CDN；纯静态部署可直接用） -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
 </head>
 <body>
-  <!-- 世界舞台：canvas 全幅，夜间蒙层随其缩放 -->
+  <!-- 世界舞台：Three.js WebGL 场景全幅铺满 -->
   <div id="stage">
-    <canvas id="town"></canvas>
+    <div id="town3d"></div>
     <div id="nightveil"></div>
 
     <!-- 左上 HUD：时间 + 天 + 暂停/速度 -->
@@ -97,6 +106,6 @@
     </section>
   </aside>
 
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>
