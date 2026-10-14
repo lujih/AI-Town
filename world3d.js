@@ -16,12 +16,15 @@ const ROADS = [
 ];
 
 const ROOF_STYLE = {
-  cafe:    { wall: 0xd8b06a, roof: 0x8b3a1f, h: 34 },
-  lib:     { wall: 0x4a6aa8, roof: 0x2f4570, h: 44 },
-  park:    { wall: 0x4a7c3f, roof: 0x2f5a2a, h: 0 },
-  home1:   { wall: 0xe8d08a, roof: 0xa85a2f, h: 26 },
-  home2:   { wall: 0xd0c090, roof: 0x7a6a50, h: 52 },
-  market:  { wall: 0xb070c0, roof: 0x6a3a8a, h: 22 },
+  // h = 墙高（场景单位）。不再 *0.5 —— 之前集市墙高仅 4.4、高宽比 6%，
+  // 比地毯还扁，这是"像 2D"的最大原因。
+  // roofType: gable 双坡（山墙可见）/ hip 四坡 / flat 平顶（带女儿墙）
+  cafe:    { wall: 0xd8b06a, roof: 0x8b3a1f, h: 20, roofType: "gable", floors: 1 },
+  lib:     { wall: 0x4a6aa8, roof: 0x2f4570, h: 30, roofType: "flat",  floors: 2 },
+  park:    { wall: 0x4a7c3f, roof: 0x2f5a2a, h: 0,  roofType: "flat",  floors: 0 },
+  home1:   { wall: 0xe8d08a, roof: 0xa85a2f, h: 16, roofType: "hip",   floors: 1 },
+  home2:   { wall: 0xd0c090, roof: 0x7a6a50, h: 34, roofType: "flat",  floors: 3 },
+  market:  { wall: 0xb070c0, roof: 0x6a3a8a, h: 14, roofType: "gable", floors: 1 },
 };
 
 export function createWorld3d(sim, hooks = {}) {
@@ -110,7 +113,8 @@ export function createWorld3d(sim, hooks = {}) {
   }
   applyCam();
   // ---------- 光照 ----------
-  const sun = new THREE.DirectionalLight(0xfff2d8, 1.1);
+  // 主光偏暖、入射角低斜（产生长影子与立面的明暗对比）
+  const sun = new THREE.DirectionalLight(0xffe0b0, 1.35);
   sun.position.set(300, 420, 220);
   sun.castShadow = true;
   sun.shadow.mapSize.set(TIER_CFG.shadows ? 512 : 256, TIER_CFG.shadows ? 512 : 256);
@@ -121,8 +125,12 @@ export function createWorld3d(sim, hooks = {}) {
   scene.add(sun); scene.add(sun.target);
   sun.target.position.set((DESIGN_W / 2) * WORLD_SCALE, 0, (DESIGN_H / 2) * WORLD_SCALE);
 
-  const hemi = new THREE.HemisphereLight(0x8fb8ff, 0x2f4a2a, 0.5);
+  const hemi = new THREE.HemisphereLight(0x8fb8ff, 0x2f4a2a, 0.38);
   scene.add(hemi);
+  // 冷色补光：从主光对侧打，背光面不会死黑，立面两面产生冷暖区分
+  const fill = new THREE.DirectionalLight(0x8aa8ff, 0.32);
+  fill.position.set(-260, 180, -160);
+  scene.add(fill);
 
   const lampLights = [];
   const lampMeshes = [];
@@ -210,25 +218,140 @@ export function createWorld3d(sim, hooks = {}) {
       continue;
     }
 
-    const wallH = style.h * WORLD_SCALE * 0.5;
-    const wall = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, h), mat(style.wall));
-    wall.position.set(cx, wallH / 2 + 0.6, cz);
-    wall.castShadow = true; wall.receiveShadow = true;
-    scene.add(wall);
-    const roofH = Math.max(6, wallH * 0.45);
-    const roofGeo = new THREE.ConeGeometry(Math.max(w, h) * 0.72, roofH, 4);
-    roofGeo.rotateY(Math.PI / 4);
-    const roof = new THREE.Mesh(roofGeo, mat(style.roof));
-    roof.position.set(cx, wallH + roofH / 2 + 0.6, cz);
-    roof.castShadow = true;
-    scene.add(roof);
-    const door = new THREE.Mesh(new THREE.BoxGeometry(w * 0.2, wallH * 0.45, 0.5), mat(0x2a1a0a));
-    door.position.set(cx, wallH * 0.25 + 0.6, cz + h / 2 + 0.1);
+    const wallH = style.h;   // 墙高不再打折
+    const wallY0 = 0.6;      // 建在一块 1.2 厚的地基石上
+    // 地基：比墙略宽，露出 0.6 高的基座，让建筑"立"在地上而不是贴在地上
+    const plinth = new THREE.Mesh(new THREE.BoxGeometry(w + 1.2, 1.2, h + 1.2), mat(0x9a9a8a));
+    plinth.position.set(cx, wallY0 - 0.6 + 0.6, cz);
+    plinth.receiveShadow = true;
+    scene.add(plinth);
+
+    // 墙体：每层一块，层间用深色层线（floorline）分割，制造体量节奏
+    const floors = Math.max(1, style.floors || 1);
+    const fh = wallH / floors;
+    for (let f = 0; f < floors; f++) {
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(w, fh, h), mat(style.wall));
+      wall.position.set(cx, wallY0 + fh * f + fh / 2, cz);
+      wall.castShadow = true; wall.receiveShadow = true;
+      scene.add(wall);
+      if (f > 0) {
+        const line = new THREE.Mesh(new THREE.BoxGeometry(w + 0.5, 0.5, h + 0.5), mat(0x6a6a7a));
+        line.position.set(cx, wallY0 + fh * f, cz);
+        scene.add(line);
+      }
+    }
+
+    // ---- 屋顶 ----
+    const roofY = wallY0 + wallH;
+    if (style.roofType === "flat") {
+      // 平顶：顶板 + 女儿墙（low parapet），楼顶有体量感
+      const slab = new THREE.Mesh(new THREE.BoxGeometry(w + 0.8, 0.8, h + 0.8), mat(style.roof));
+      slab.position.set(cx, roofY + 0.4, cz);
+      slab.castShadow = true;
+      scene.add(slab);
+      const pw = 0.9;
+      for (const [px, pz, sw, sd] of [
+        [cx, cz + h/2 + pw/2 - 0.2, w + 0.8, pw], [cx, cz - h/2 - pw/2 + 0.2, w + 0.8, pw],
+        [cx - w/2 - pw/2 + 0.2, cz, pw, h + 0.8], [cx + w/2 + pw/2 - 0.2, cz, pw, h + 0.8],
+      ]) {
+        const par = new THREE.Mesh(new THREE.BoxGeometry(sw, 1.6, sd), mat(style.roof));
+        par.position.set(px, roofY + 1.6, pz);
+        par.castShadow = true;
+        scene.add(par);
+      }
+      // 楼顶水箱（细节体量）
+      const tank = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 1.4, 2.6, 8), mat(0x8a8a90));
+      tank.position.set(cx + w * 0.22, roofY + 2.1, cz - h * 0.18);
+      tank.castShadow = true;
+      scene.add(tank);
+    } else {
+      // 坡屋顶：山墙三角体量可见（gable 俯视时两条脊线清晰）
+      const overhang = 1.4;                     // 悬挑：屋顶比墙宽一圈，投下屋檐阴影
+      const rh = Math.max(7, wallH * 0.55);
+      if (style.roofType === "gable") {
+        // 双坡：三棱柱。CylinderGeometry(…,3) 的截面三角形顶点朝 +Z，
+        // rotateX(-90°) 后顶点朝 +Y（屋脊在上）、底面水平、轴沿 Z。
+        // 截面高 = 1.5R（顶点 R + 底边 0.5R），故 R = rh/1.5 才能让
+        // 屋脊恰在 roofY+rh、檐口恰在 roofY。
+        const R = rh / 1.5;
+        const roofLen = Math.max(w, h) + overhang * 2;   // 悬挑出山墙
+        const roofW = Math.min(w, h) + overhang * 1.6;   // 檐口宽度（含悬挑）
+        const prism = new THREE.CylinderGeometry(R, R, roofLen, 3, 1);
+        prism.rotateX(-Math.PI / 2);
+        prism.scale(roofW / (2 * R), 1, 1);              // 横向拉宽盖住墙体
+        const roof = new THREE.Mesh(prism, mat(style.roof));
+        roof.position.set(cx, roofY + rh - R, cz);
+        if (w >= h) roof.rotation.y = Math.PI / 2;       // 屋脊沿长边
+        roof.castShadow = true;
+        scene.add(roof);
+        // 山墙填充：三角形板贴在屋顶两端（Shape 三角 → ExtrudeGeometry）
+        // 三角底边宽 = roofW，高 = rh，与屋顶截面完全一致，法线朝 ±屋脊轴
+        const halfW = roofW / 2;
+        const tri = new THREE.Shape();
+        tri.moveTo(-halfW, 0);
+        tri.lineTo(halfW, 0);
+        tri.lineTo(0, rh);
+        tri.closePath();
+        const gGeoBase = new THREE.ExtrudeGeometry(tri, { depth: 0.7, bevelEnabled: false });
+        gGeoBase.translate(0, 0, -0.35);   // 厚度居中
+        for (const sgn of [-1, 1]) {
+          const gable = new THREE.Mesh(gGeoBase.clone(), mat(style.wall));
+          // 屋脊沿 X（w>=h）：山墙在 ±Z 两端；否则沿 Z：山墙在 ±X
+          if (w >= h) {
+            gable.position.set(cx, roofY - 0.2, cz + sgn * (Math.min(w, h) / 2 - 0.05));
+          } else {
+            gable.rotation.y = Math.PI / 2;
+            gable.position.set(cx + sgn * (Math.min(w, h) / 2 - 0.05), roofY - 0.2, cz);
+          }
+          scene.add(gable);
+        }
+      } else {
+        // 四坡：圆锥台 + 四棱脊感（low-poly 棱锥）
+        const cone = new THREE.ConeGeometry(Math.max(w, h) * 0.68, rh, 4);
+        cone.rotateY(Math.PI / 4);
+        const roof = new THREE.Mesh(cone, mat(style.roof));
+        roof.position.set(cx, roofY + rh / 2, cz);
+        roof.scale.set(w > h ? 1 : w / h, 1, w > h ? h / w : 1);   // 椭圆化贴合矩形
+        roof.castShadow = true;
+        scene.add(roof);
+      }
+      // 烟囱（住宅）——打破屋顶轮廓线
+      if (p.id.startsWith("home")) {
+        const chim = new THREE.Mesh(new THREE.BoxGeometry(2, 6, 2), mat(0x8a5a4a));
+        chim.position.set(cx + w * 0.25, roofY + rh * 0.7, cz - h * 0.2);
+        chim.castShadow = true;
+        scene.add(chim);
+      }
+    }
+
+    // ---- 门与窗：贴在朝向镜头（+x/+z）的两个立面 ----
+    const doorH = Math.min(6, wallH * 0.6);
+    const door = new THREE.Mesh(new THREE.BoxGeometry(w * 0.22, doorH, 0.6), mat(0x2a1a0a));
+    door.position.set(cx + w * 0.1, wallY0 + doorH / 2, cz + h / 2 + 0.15);
     scene.add(door);
-    const win1 = new THREE.Mesh(new THREE.BoxGeometry(w * 0.16, wallH * 0.22, 0.5), mat(0xbfe0ff, { emissive: 0x334455 }));
-    win1.position.set(cx - w * 0.28, wallH * 0.55, cz + h / 2 + 0.1);
-    scene.add(win1);
-    const win2 = win1.clone(); win2.position.x = cx + w * 0.28; scene.add(win2);
+    // 咖啡馆：门上加遮阳篷（accent 色，全镇唯一，作为记忆点）
+    if (p.id === "cafe") {
+      const awn = new THREE.Mesh(new THREE.BoxGeometry(w * 0.46, 0.45, 2.4), mat(0xcc4a3a));
+      awn.position.set(cx + w * 0.1, wallY0 + doorH + 0.9, cz + h / 2 + 1.0);
+      awn.rotation.x = -0.14;
+      awn.castShadow = true;
+      scene.add(awn);
+    }
+    // 窗：两层楼时上下两排；贴墙面避免悬浮
+    const winRows = floors > 1 ? [0.35, 0.72] : [0.55];
+    for (const fr of winRows) {
+      for (const sgn of [-1, 1]) {
+        const win = new THREE.Mesh(new THREE.BoxGeometry(w * 0.11, wallH * 0.16, 0.5),
+          mat(0xbfe0ff, { emissive: 0x334455 }));
+        win.position.set(cx + sgn * w * 0.26, wallY0 + wallH * fr, cz + h / 2 + 0.12);
+        scene.add(win);
+        // 侧面也开窗，转 90° 走向时立面不空
+        const winS = new THREE.Mesh(new THREE.BoxGeometry(0.5, wallH * 0.16, h * 0.11),
+          mat(0xbfe0ff, { emissive: 0x334455 }));
+        winS.position.set(cx + w / 2 + 0.12, wallY0 + wallH * fr, cz + sgn * h * 0.22);
+        scene.add(winS);
+      }
+    }
   }
 
   function addTrees(cx, cz, w, h, count) {
@@ -387,23 +510,23 @@ export function createWorld3d(sim, hooks = {}) {
     g.userData.isVisitor = !!npc.isVisitor;
 
     const bodyMat = mat(new THREE.Color(npc.personality.color));
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.6, 4.4, 10), bodyMat);
-    body.position.y = 2.6; body.castShadow = true;
-    const head = new THREE.Mesh(new THREE.SphereGeometry(1.5, 12, 10), mat(0xf0d8c0));
-    head.position.y = 5.6; head.castShadow = true;
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(1.7, 2.1, 6.0, 10), bodyMat);
+    body.position.y = 3.4; body.castShadow = true;
+    const head = new THREE.Mesh(new THREE.SphereGeometry(1.9, 12, 10), mat(0xf0d8c0));
+    head.position.y = 7.6; head.castShadow = true;
     const face = new THREE.Mesh(
       new THREE.CircleGeometry(0.85, 12),
       new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.92 })
     );
-    face.position.set(0, 5.7, 1.35);
+    face.position.set(0, 7.7, 1.7);
     g.add(body, head, face);
 
     const spr = makeTextSprite(npc.name, { color: "#ffffff", size: 44 });
-    spr.position.y = 9;
+    spr.position.y = 12;
     g.add(spr);
 
     const ring = new THREE.Mesh(
-      new THREE.RingGeometry(2.2, 2.6, 32),
+      new THREE.RingGeometry(2.9, 3.4, 32),
       new THREE.MeshBasicMaterial({ color: 0xffb347, transparent: true, opacity: 0, side: THREE.DoubleSide })
     );
     ring.rotation.x = -Math.PI / 2;
@@ -639,8 +762,10 @@ export function createWorld3d(sim, hooks = {}) {
 
     // 数值搜索出的最优点（俯角有 42° 下限：再平建筑就显得扁平，失去 3D 感）
     const portrait = aspect < 1;
+    // 俯角是立体感的生命线：42° 时墙面投影高度只剩 cos(42°)≈0.74，
+    // 且墙本身只有 4-10 单位高，立面几乎不可见。50°+ 让立面与屋顶同时可读。
     camAzimuth = portrait ? Math.PI : 32 * Math.PI / 180;
-    pitch = portrait ? 42 * Math.PI / 180 : 57 * Math.PI / 180;
+    pitch = portrait ? 50 * Math.PI / 180 : 57 * Math.PI / 180;
     _ndcCap = portrait ? NDC_CAP_PORTRAIT : NDC_CAP_DESKTOP;
 
     camDist = fitCamDist();
