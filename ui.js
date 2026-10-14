@@ -163,7 +163,15 @@ export function createUI(sim, hooks = {}) {
   }
   function renderEventBanner() {
     const ev = sim.activeEvent;
-    if (!ev) { eventBanner.classList.add("hidden"); return; }
+    // 变化检测：横幅每 tick 都被调用，没事件时不能反复 add/remove class，
+    // 有事件时更不能每 tick innerHTML 重建（每秒 10 次的 DOM 浪费）。
+    if (!ev) {
+      if (!eventBanner.classList.contains("hidden")) eventBanner.classList.add("hidden");
+      return;
+    }
+    const sig = ev.id + "|" + ev.name;
+    if (eventBanner.dataset.sig === sig && !eventBanner.classList.contains("hidden")) return;
+    eventBanner.dataset.sig = sig;
     eventBanner.classList.remove("hidden");
     eventBanner.innerHTML = "";
     const name = document.createElement("strong");

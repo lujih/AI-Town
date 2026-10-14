@@ -34,15 +34,53 @@ export function createWorld3d(sim, hooks = {}) {
   const stage = document.getElementById("town3d");
   const nightveil = document.getElementById("nightveil");
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  renderer.shadowMap.enabled = true;
+  // 设备分级。判据不是核数/内存（headless Chrome 会虚报），而是
+  // WebGL 实际跑在什么光栅化器上：J1900 没有 GPU，Three.js 落到
+  // SwiftShader 软件渲染，一帧吃满一核——这才是 350% CPU 的来源。
+  // 探测：渲染器字符串含 SwiftShader/llvmpipe/Software 即判 low 档。
+  function detectTier() {
+    try {
+      const c = document.createElement("canvas");
+      const gl = c.getContext("webgl2") || c.getContext("webgl");
+      if (!gl) return "low";
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      const r = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+      const gpu = String(r || "");
+      // 软件光栅化特征串
+      if (/swiftshader|llvmpipe|softpipe|software|ANGLE \((?=.*CPU)/i.test(gpu)) return "low";
+      // 有真实 GPU：按核数分中高档
+      return (navigator.hardwareConcurrency || 4) <= 4 ? "mid" : "high";
+    } catch (_) { return "low"; }
+  }
+  const TIER = detectTier();
+  // pixelRatio 是绝对值（不是乘 devicePixelRatio）：低端设备的软件光栅化
+  // 成本正比于像素数，dpr2/3 的屏幕若照乘，像素量是 dpr1 的 4-9 倍。
+  // low 档钉死 0.75（含 resScale 0.6 后实际 ≈0.45x CSS 尺寸），宁可柔和也不卡。
+  const TIER_CFG = {
+    low:  { pixelRatio: 0.75, antialias: false, shadows: false, resScale: 0.6 },
+    mid:  { pixelRatio: 1.0,  antialias: false, shadows: true,  resScale: 0.85 },
+    high: { pixelRatio: 2.0,  antialias: true,  shadows: true,  resScale: 1.0 },
+  }[TIER];
+  // 暴露给调试与测试
+  window.__tier = TIER;
+
+  const renderer = new THREE.WebGLRenderer({
+    antialias: TIER_CFG.antialias,
+    powerPreference: TIER === "high" ? "high-performance" : "low-power",
+  });
+  renderer.setPixelRatio(TIER_CFG.pixelRatio);
+  renderer.shadowMap.enabled = TIER_CFG.shadows;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   stage.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x0d1330, 0.0009);
+  // 用线性雾而非 FogExp2：指数平方衰减无法同时满足"小镇清晰 + 边缘淡出"
+  // （实测 0.0015 时小镇远端只剩 16% 可见度）。线性雾的起止距离可以直接标定：
+  //   near = 相机到小镇最远端的距离 → 小镇本身完全不受雾影响
+  //   far  = 地面边缘的距离        → 边缘恰好被天空色吃掉
+  // 具体数值在 resize() 里按 camDist 动态算，因为相机距离随视口变化。
+  scene.fog = new THREE.Fog(0x0d1330, 600, 1200);
 
   // 逻辑坐标 → 场景坐标
   const OX = (DESIGN_W / 2) * WORLD_SCALE;
@@ -53,24 +91,29 @@ export function createWorld3d(sim, hooks = {}) {
   // ---------- 相机 ----------
   const cam = new THREE.PerspectiveCamera(38, 1, 1, 4000);
   let camDist = 420;
-  const camPitch = 1.0;   // ~57° 俯角
+  // 方位角：小镇是横向的（场景 360×224，宽高比 1.6），而手机竖屏只有 ~0.46。
+  // 把横向场景硬塞进竖向屏幕只能无限拉远，小镇会缩成一个点。
+  // 所以竖屏时把相机绕 Y 轴转 90°，让小镇长轴对齐屏幕长轴。
+  let camAzimuth = Math.PI / 4;   // 桌面：对角等轴视角
+  const BASE_PITCH = 1.0;
+  let pitch = BASE_PITCH;
   function applyCam() {
+    const horiz = camDist * Math.sin(pitch);
     cam.position.set(
-      camDist * Math.sin(camPitch) * 0.7071,
-      camDist * Math.cos(camPitch),
-      camDist * Math.sin(camPitch) * 0.7071
+      horiz * Math.cos(camAzimuth),
+      camDist * Math.cos(pitch),
+      horiz * Math.sin(camAzimuth)
     );
-    cam.position.x += OX * 0.9;
-    cam.position.z += OZ * 0.9;
+    cam.position.x += OX;
+    cam.position.z += OZ;
     cam.lookAt(OX, 0, OZ);
   }
   applyCam();
-
   // ---------- 光照 ----------
   const sun = new THREE.DirectionalLight(0xfff2d8, 1.1);
   sun.position.set(300, 420, 220);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(1024, 1024);
+  sun.shadow.mapSize.set(TIER_CFG.shadows ? 512 : 256, TIER_CFG.shadows ? 512 : 256);
   sun.shadow.camera.left = -300; sun.shadow.camera.right = 300;
   sun.shadow.camera.top = 300; sun.shadow.camera.bottom = -300;
   sun.shadow.camera.near = 10; sun.shadow.camera.far = 1200;
@@ -93,7 +136,10 @@ export function createWorld3d(sim, hooks = {}) {
 
   // ---------- 地面 + 道路 ----------
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(DESIGN_W * WORLD_SCALE * 1.3, DESIGN_H * WORLD_SCALE * 1.3),
+    // 地面必须大到覆盖整个视锥，否则地平线会进画面（实测 1.6 倍时会看到
+    // 一条硬边横在地平线位置，上下都是天空）。取 8 倍 ≈ 2880 单位，
+    // 远超最远相机距离，边缘永远在视野之外；远处由线性雾自然淡出。
+    new THREE.PlaneGeometry(DESIGN_W * WORLD_SCALE * 8, DESIGN_H * WORLD_SCALE * 8),
     mat(0x6a9c45)
   );
   ground.rotation.x = -Math.PI / 2;
@@ -373,7 +419,10 @@ export function createWorld3d(sim, hooks = {}) {
   }
 
   // ---------- 昼夜 ----------
+  let _lastSunLight = -1;   // 光值没变就跳过整条更新链（背景/材质/雾全是脏操作）
   function updateSun(light) {
+    if (Math.abs(light - _lastSunLight) < 0.002) return;
+    _lastSunLight = light;
     const sunH = 80 + light * 380;
     sun.position.set(300 - light * 180, sunH, 220 - light * 80);
     sun.intensity = 0.12 + light * 1.0;
@@ -398,15 +447,23 @@ export function createWorld3d(sim, hooks = {}) {
 
   // 唯一的 updateVeil：同时驱动 DOM 蒙层与 3D 光照。
   // 注意：不要再定义同名函数——函数提升会让后者覆盖前者，导致 updateSun 静默失效。
+  let _lastVeilOpacity = -1;
   function updateVeil() {
     const light = sim.daylight();
     updateSun(light);
-    const veilOpacity = light < 0.6 ? (0.6 - light) * 0.9 : 0;
-    nightveil.style.opacity = Math.min(0.5, veilOpacity).toFixed(3);
+    const veilOpacity = Math.min(0.5, light < 0.6 ? (0.6 - light) * 0.9 : 0);
+    // 每 tick 写 style.opacity 会强制样式重算；变化 <0.01 时人眼不可辨，跳过
+    if (Math.abs(veilOpacity - _lastVeilOpacity) >= 0.01) {
+      _lastVeilOpacity = veilOpacity;
+      nightveil.style.opacity = veilOpacity.toFixed(3);
+    }
   }
 
   // ---------- 渲染循环 ----------
+  // 调用方（app.js tick）负责"有变化才调 draw()"：NPC 在走 / 光照节拍到了。
+  // 静止时完全不渲染——软件光栅化一次全量绘制要吃满一核，静止帧没有理由重画。
   function draw() {
+    const now = performance.now();
     for (const npc of sim.allNpcs) {
       if (!npc._mesh) continue;
       npc._mesh.position.x = toSceneX(npc.x);
@@ -416,9 +473,9 @@ export function createWorld3d(sim, hooks = {}) {
         const tz = toSceneZ(npc.target.y + npc.target.h / 2);
         npc._mesh.rotation.y = Math.atan2(tx - npc._mesh.position.x, tz - npc._mesh.position.z);
       }
-      const t = performance.now() * 0.004;
+      const t = now * 0.004;
       npc._mesh.position.y = 0.6 + (npc.target && !npc.chatOpen ? Math.abs(Math.sin(t + npc.id)) * 0.4 : 0);
-      const locAge = npc._locateT ? performance.now() - npc._locateT : Infinity;
+      const locAge = npc._locateT ? now - npc._locateT : Infinity;
       if (npc._ring) {
         if (locAge < 1600) {
           // 定位脉冲（点击名册后）
@@ -517,28 +574,85 @@ export function createWorld3d(sim, hooks = {}) {
   }
 
   // ---------- 响应式 ----------
-  const WORLD_R = Math.hypot(DESIGN_W, DESIGN_H) * WORLD_SCALE / 2 + 24;
-  function fitCamDist(aspect) {
-    const vFov = (cam.fov * Math.PI) / 180;
-    const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
-    const need = WORLD_R / Math.max(Math.sin(camPitch), 0.35);
-    let lo = 100, hi = 2000;
+  // 相机适配：把世界包围盒的角点真实投影到 NDC，二分求能装下它的最小距离。
+  // 角度与距离不是手调的，是数值搜索出来的（见 /tmp/fit/fit.mjs 的思路）：
+  //
+  //   竖屏 390x844:  方位 180°  俯角 29°   → 世界占屏 横 94% 纵 59%
+  //   桌面 1440x900: 方位 110°  俯角 52°   → 世界占屏 横 100% 纵 100%
+  //
+  // 两条实测结论（都推翻了先前的手调）：
+  // 1. 俯角要小。地面在屏幕上"立"起来的程度由俯角决定，29° 比 57° 的
+  //    纵向占比大得多。先前用 57° 是纵向浪费的主因。
+  // 2. 竖屏必然留白。世界 360x224（比例 1.6）塞进 0.46 的屏幕，
+  //    数学上填不满——这是几何，不是参数问题。
+  //
+  // 所以竖屏采取"适度裁边"策略：放弃完整边框，换小镇放大 42%。
+  // 手机上要的是看清居民，不是看全草地。裁掉的是边缘空地，六个建筑仍在画面内。
+  const CAM_HEIGHT = 26;        // 最高建筑+屋顶，用于包围盒上沿
+  const NDC_CAP_DESKTOP = 0.94; // 桌面：完整入画
+  const NDC_CAP_PORTRAIT = 1.20;// 竖屏：左右各裁约 10%，换取更大的实体占比
+
+  function worldCorners() {
+    const cs = [];
+    for (const x of [0, DESIGN_W])
+      for (const y of [0, CAM_HEIGHT])
+        for (const z of [0, DESIGN_H])
+          cs.push(new THREE.Vector3(toSceneX(x), y, toSceneZ(z)));
+    return cs;
+  }
+  const corners = worldCorners();
+
+  const _fitV = new THREE.Vector3();
+  let _ndcCap = NDC_CAP_DESKTOP;
+  function maxNdcExtent(dist) {
+    const prev = camDist;
+    camDist = dist; applyCam();
+    cam.updateMatrixWorld(true);
+    cam.updateProjectionMatrix();
+    let m = 0;
+    for (const c of corners) {
+      _fitV.copy(c).project(cam);
+      m = Math.max(m, Math.abs(_fitV.x), Math.abs(_fitV.y));
+    }
+    camDist = prev; applyCam();
+    return m;
+  }
+  function fitCamDist() {
+    let lo = 40, hi = 2000;
     for (let i = 0; i < 40; i++) {
       const mid = (lo + hi) / 2;
-      if (Math.min(Math.tan(vFov / 2) * mid, Math.tan(hFov / 2) * mid) >= need) hi = mid;
-      else lo = mid;
+      if (maxNdcExtent(mid) <= _ndcCap) hi = mid; else lo = mid;
     }
     return hi;
   }
+
   function resize() {
     const w = stage.clientWidth || window.innerWidth;
     const h = stage.clientHeight || window.innerHeight;
-    renderer.setSize(w, h);
+    // 低端档直接降低渲染分辨率（CSS 尺寸不变，画布内部缩小再被拉伸）
+    renderer.setSize(Math.round(w * TIER_CFG.resScale), Math.round(h * TIER_CFG.resScale), false);
+    renderer.domElement.style.width = "100%";
+    renderer.domElement.style.height = "100%";
     const aspect = w / h;
     cam.aspect = aspect;
-    camDist = fitCamDist(aspect);
-    applyCam();
     cam.updateProjectionMatrix();
+
+    // 数值搜索出的最优点（俯角有 42° 下限：再平建筑就显得扁平，失去 3D 感）
+    const portrait = aspect < 1;
+    camAzimuth = portrait ? Math.PI : 32 * Math.PI / 180;
+    pitch = portrait ? 42 * Math.PI / 180 : 57 * Math.PI / 180;
+    _ndcCap = portrait ? NDC_CAP_PORTRAIT : NDC_CAP_DESKTOP;
+
+    camDist = fitCamDist();
+    applyCam();
+    cam.updateMatrixWorld(true);
+
+    // 线性雾起止按相机距离标定：
+    // 世界对角线约 424 单位，取世界半径作为"小镇远端"，
+    // 地面边缘（1.6 倍地面的一半 ≈ 288 单位）之外的区域交给雾。
+    const worldR = Math.hypot(DESIGN_W, DESIGN_H) * WORLD_SCALE / 2;   // ≈ 212
+    scene.fog.near = camDist + worldR * 0.9;
+    scene.fog.far  = camDist + worldR * 3.2;
   }
   window.addEventListener("resize", resize);
 

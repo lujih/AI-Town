@@ -282,7 +282,9 @@ button { font-family: inherit; font-size: inherit; }
 .onboard {
   position: absolute;
   left: 50%;
-  top: 50%;
+  /* 不用 50% 居中：那正好压住小镇最热闹的中心区域。
+     靠上放置（22%）让出下方给世界，与 HUD 也不打架。 */
+  top: 22%;
   transform: translate(-50%, -50%);
   z-index: 30;
   background: rgba(13, 19, 48, 0.94);
@@ -297,6 +299,12 @@ button { font-family: inherit; font-size: inherit; }
 @keyframes onboard-in {
   from { opacity: 0; transform: translate(-50%, calc(-50% + 12px)); }
   to   { opacity: 1; transform: translate(-50%, -50%); }
+}
+/* 矮屏 / 横屏：22% 会顶到 HUD，压到 28% 并缩小 */
+@media (max-height: 700px) {
+  .onboard { top: 30%; padding: var(--sp-4) var(--sp-5); }
+  .onboard-title { font-size: var(--t-body); margin-bottom: var(--sp-2); }
+  .onboard-list { margin-bottom: var(--sp-4); gap: 6px; }
 }
 .onboard-title {
   font-family: var(--font-hud);

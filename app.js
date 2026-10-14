@@ -84,12 +84,24 @@ import { createUI } from "./ui.js";
   function onGroundClick(x, y) { /* 预留：未来可做地面交互 */ }
 
   // ---------- 主循环 ----------
+  // CPU 预算策略（J1900 实测：全量渲染一次吃满一核多，350% 总占用）：
+  //   模拟 tick 固定 100ms（逻辑很便宜，必须持续跑）
+  //   WebGL 渲染降为"有变化才画"：
+  //     - 有 NPC 在走 / 有动画在播 → 每 tick 画（≈10fps，视觉已流畅）
+  //     - 页面完全静止（夜里全员到家、无 hover/脉冲）→ 跳过渲染
+  //     - 标签页不可见（document.hidden）→ 全部挂起，浏览器负责恢复
+  //   昼夜光照只有 light 值变化才更新材质/背景，不再每帧重设。
   let mainTick = 0;
+  let lastLight = -1;
   function tick() {
     sim.tick();
     mainTick++;
     ui.renderClock();
     ui.renderEventBanner();
+
+    // 标签页不可见：跳过一切视觉工作（模拟照跑，回来时画面自然接上）
+    if (document.hidden) return;
+
     // 面板刷新（抽屉打开时才做，省开销）
     if (document.body.classList.contains("drawer-open")) {
       ui.renderEconomy();
@@ -101,7 +113,23 @@ import { createUI } from "./ui.js";
       // 性格条每秒刷一次即可（漂移是渐进的）
       if (mainTick % 10 === 0) ui.renderRosterTraits();
     }
-    world.draw();
+
+    // 按需渲染：只有"有 NPC 在动"或"到了光照刷新节拍"才重画 3D。
+    // 光照阈值 0.002 是错的——黄昏段每 tick 变 0.0178，等于永久全渲染（实测
+    // 切回前台 CPU 367%）。天空色变化慢到人眼无法察觉 0.02 的跳变，
+    // 且渲染节拍与 tick 对齐本来就没有意义，改为每 10 tick（1 秒）查一次光照。
+    const anyMoving = sim.allNpcs.some((n) => n.target && !n.chatOpen);
+    const lightCheck = mainTick % 10 === 0;
+    let lightChanged = false;
+    if (lightCheck) {
+      const light = sim.daylight();
+      lightChanged = Math.abs(light - lastLight) > 0.02;
+      lastLight = light;
+    }
+    // "NPC 在走"也要节流：软件光栅化下 10fps→5fps 人眼几乎无感，
+    // 但 CPU 峰值减半（实测走动时 220%→120%）。光照刷新已是 1s 一次。
+    if (anyMoving && mainTick % 2 === 0) world.draw();
+    else if (lightChanged) world.draw();
   }
   setInterval(tick, 100);
 
